@@ -111,7 +111,7 @@ static void riscv_any_cpu_init(Object *obj)
 {
     CPURISCVState *env = &RISCV_CPU(obj)->env;
     set_misa(env, RVXLEN | RVI | RVM | RVA | RVF | RVD | RVC | RVU);
-    set_priv_version(env, PRIV_VERSION_1_11_0);
+    set_priv_version(env, PRIV_VERSION_DEFAULT);
     set_resetvec(env, DEFAULT_RSTVEC);
 }
 
@@ -120,6 +120,8 @@ static void riscv_any_cpu_init(Object *obj)
 static void riscv_base32_cpu_init(Object *obj)
 {
     CPURISCVState *env = &RISCV_CPU(obj)->env;
+    set_priv_version(env, PRIV_VERSION_DEFAULT);
+    set_resetvec(env, DEFAULT_RSTVEC);
     /* We set this in the realise function */
     set_misa(env, 0);
 }
@@ -158,6 +160,8 @@ static void rv32imacu_nommu_cpu_init(Object *obj)
 static void riscv_base64_cpu_init(Object *obj)
 {
     CPURISCVState *env = &RISCV_CPU(obj)->env;
+    set_priv_version(env, PRIV_VERSION_DEFAULT);
+    set_resetvec(env, DEFAULT_RSTVEC);
     /* We set this in the realise function */
     set_misa(env, 0);
 }
@@ -317,7 +321,7 @@ static void riscv_cpu_realize(DeviceState *dev, Error **errp)
     RISCVCPU *cpu = RISCV_CPU(dev);
     CPURISCVState *env = &cpu->env;
     RISCVCPUClass *mcc = RISCV_CPU_GET_CLASS(dev);
-    int priv_version = PRIV_VERSION_1_11_0;
+    int priv_version = PRIV_VERSION_DEFAULT;
     target_ulong target_misa = 0;
     Error *local_err = NULL;
 
@@ -340,10 +344,8 @@ static void riscv_cpu_realize(DeviceState *dev, Error **errp)
                        cpu->cfg.priv_spec);
             return;
         }
+        set_priv_version(env, priv_version);
     }
-
-    set_priv_version(env, priv_version);
-    set_resetvec(env, DEFAULT_RSTVEC);
 
     if (cpu->cfg.mmu) {
         set_feature(env, RISCV_FEATURE_MMU);
