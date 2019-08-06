@@ -6,3 +6,7 @@ config XTENSA_XTFPGA
     select OPENCORES_ETH
     select PFLASH_CFI01
     select SERIAL
+
+config XTENSA_ESP32
+    bool
+    select ESPRESSIF
