@@ -2774,6 +2774,12 @@ static void translate_wur_fsr(DisasContext *dc, const OpcodeArg arg[],
     tcg_gen_andi_i32(cpu_UR[par[0]], arg[0].in, 0xffffff80);
 }
 
+static void translate_xur_f64(DisasContext *dc, const OpcodeArg arg[],
+                              const uint32_t par[])
+{
+    /* no-op */
+}
+
 static void translate_xor(DisasContext *dc, const OpcodeArg arg[],
                           const uint32_t par[])
 {
@@ -5528,6 +5534,24 @@ static const XtensaOpcodeOps core_ops[] = {
         .translate = translate_wur_fsr,
         .par = (const uint32_t[]){FSR},
         .coprocessor = 0x1,
+    }, {
+        .name = "wur.f64r_lo",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "wur.f64r_hi",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "wur.f64s",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "rur.f64r_lo",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "rur.f64r_hi",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "rur.f64s",
+        .translate = translate_xur_f64,
     }, {
         .name = "wur.threadptr",
         .translate = translate_wur,
