@@ -2663,6 +2663,12 @@ static void translate_wur(DisasContext *dc, const OpcodeArg arg[],
     tcg_gen_mov_i32(cpu_UR[par[0]], arg[0].in);
 }
 
+static void translate_xur_f64(DisasContext *dc, const OpcodeArg arg[],
+                              const uint32_t par[])
+{
+    /* no-op */
+}
+
 static void translate_xor(DisasContext *dc, const OpcodeArg arg[],
                           const uint32_t par[])
 {
@@ -5434,6 +5440,24 @@ static const XtensaOpcodeOps core_ops[] = {
         .name = "wur.expstate",
         .translate = translate_wur,
         .par = (const uint32_t[]){EXPSTATE},
+    }, {
+        .name = "wur.f64r_lo",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "wur.f64r_hi",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "wur.f64s",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "rur.f64r_lo",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "rur.f64r_hi",
+        .translate = translate_xur_f64,
+    }, {
+        .name = "rur.f64s",
+        .translate = translate_xur_f64,
     }, {
         .name = "wur.threadptr",
         .translate = translate_wur,
