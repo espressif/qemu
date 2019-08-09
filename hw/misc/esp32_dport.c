@@ -23,12 +23,6 @@
 #define ESP32_DPORT_SIZE   (DR_REG_DPORT_END - DR_REG_DPORT_BASE)
 
 
-const hwaddr esp32_intmatrix_base[] = {
-    ESP32_DPORT_PRO_INTMATRIX_BASE,
-    ESP32_DPORT_APP_INTMATRIX_BASE
-};
-
-
 static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32DportState *s = ESP32_DPORT(opaque);
@@ -62,8 +56,18 @@ static void esp32_dport_realize(DeviceState *dev, Error **errp)
     s->cpu_count = ms->smp.cpus;
 
     for (int i = 0; i < s->cpu_count; ++i) {
-        object_property_add_const_link(OBJECT(&s->intmatrix[i]), "cpu", OBJECT(qemu_get_cpu(i)), &error_abort);
-        object_property_set_bool(OBJECT(&s->intmatrix[i]), true, "realized", &error_abort);
+        char name[16];
+        snprintf(name, sizeof(name), "cpu%d", i);
+        object_property_set_link(OBJECT(&s->intmatrix), OBJECT(qemu_get_cpu(i)), name, &error_abort);
+    }
+    object_property_set_bool(OBJECT(&s->intmatrix), true, "realized", &error_abort);
+
+    object_property_set_bool(OBJECT(&s->crosscore_int), true, "realized", &error_abort);
+
+    for (int index = 0; index < ESP32_DPORT_CROSSCORE_INT_COUNT; ++index) {
+        qemu_irq target = qdev_get_gpio_in(DEVICE(&s->intmatrix), ETS_FROM_CPU_INTR0_SOURCE + index);
+        assert(target);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->crosscore_int), index, target);
     }
 }
 
@@ -76,13 +80,12 @@ static void esp32_dport_init(Object *obj)
                           TYPE_ESP32_DPORT, ESP32_DPORT_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
 
-    for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
-        char name[16];
-        snprintf(name, sizeof(name), "intmatrix%d", i);
-        object_initialize_child(obj, name, &s->intmatrix[i], sizeof(s->intmatrix[i]), TYPE_ESP32_INTMATRIX, &error_abort, NULL);
+    object_initialize_child(obj, "intmatrix", &s->intmatrix, sizeof(s->intmatrix), TYPE_ESP32_INTMATRIX, &error_abort, NULL);
+    memory_region_add_subregion_overlap(&s->iomem, ESP32_DPORT_PRO_INTMATRIX_BASE, &s->intmatrix.iomem, -1);
 
-        memory_region_add_subregion_overlap(&s->iomem, esp32_intmatrix_base[i], &s->intmatrix[i].iomem, -1);
-    }
+    object_initialize_child(obj, "crosscore_int", &s->crosscore_int, sizeof(s->crosscore_int), TYPE_ESP32_CROSSCORE_INT,
+                            &error_abort, NULL);
+    memory_region_add_subregion_overlap(&s->iomem, ESP32_DPORT_CROSSCORE_INT_BASE, &s->crosscore_int.iomem, -1);
 }
 
 static Property esp32_dport_properties[] = {

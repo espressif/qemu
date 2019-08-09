@@ -134,8 +134,12 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     MemoryRegion *gpio = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->gpio), 0);
     memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, gpio, 0);
 
+    object_property_set_bool(OBJECT(&s->dport), true, "realized", &error_abort);
+
     MemoryRegion *dport = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->dport), 0);
     memory_region_add_subregion(sys_mem, DR_REG_DPORT_BASE, dport);
+
+    object_property_set_bool(OBJECT(&s->rtc_cntl), true, "realized", &error_abort);
 
     MemoryRegion *rtc_cntl = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rtc_cntl), 0);
     memory_region_add_subregion(sys_mem, DR_REG_RTCCNTL_BASE, rtc_cntl);

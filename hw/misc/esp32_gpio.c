@@ -64,7 +64,7 @@ static void esp32_gpio_init(Object *obj)
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
     memory_region_init_io(&s->iomem, obj, &uart_ops, s,
-                          TYPE_ESP32_GPIO, sizeof(s->reg));
+                          TYPE_ESP32_GPIO, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
 }
