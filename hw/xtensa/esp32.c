@@ -85,7 +85,6 @@ typedef struct Esp32SocState {
 } Esp32SocState;
 
 
-
 static void esp32_dig_reset(void *opaque, int n, int level)
 {
     Esp32SocState *s = ESP32_SOC(opaque);
@@ -221,6 +220,10 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
 
     MemoryRegion *dport = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->dport), 0);
     memory_region_add_subregion(sys_mem, DR_REG_DPORT_BASE, dport);
+    qdev_connect_gpio_out_named(DEVICE(&s->dport), ESP32_DPORT_APPCPU_RESET_GPIO, 0,
+                                qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_RESET_GPIO, 1));
+    qdev_connect_gpio_out_named(DEVICE(&s->dport), ESP32_DPORT_APPCPU_STALL_GPIO, 0,
+                                    qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, 1));
 
     object_property_set_bool(OBJECT(&s->rtc_cntl), true, "realized", &error_abort);
 
@@ -286,8 +289,8 @@ static void esp32_soc_init(Object *obj)
                             TYPE_ESP32_RTC_CNTL, &error_abort, NULL);
 
     qdev_init_gpio_in_named(DEVICE(s), esp32_dig_reset, ESP32_RTC_DIG_RESET_GPIO, 1);
-    qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_reset, ESP32_RTC_CPU_RESET_GPIO, 2);
-    qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_stall, ESP32_RTC_CPU_STALL_GPIO, 2);
+    qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_reset, ESP32_RTC_CPU_RESET_GPIO, ESP32_CPU_COUNT);
+    qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_stall, ESP32_RTC_CPU_STALL_GPIO, ESP32_CPU_COUNT);
 }
 
 static Property esp32_soc_properties[] = {

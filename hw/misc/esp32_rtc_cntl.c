@@ -14,7 +14,6 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "hw/hw.h"
-#include "hw/registerfields.h"
 #include "hw/sysbus.h"
 #include "hw/misc/esp32_reg.h"
 #include "hw/misc/esp32_rtc_cntl.h"

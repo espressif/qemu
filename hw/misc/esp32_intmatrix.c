@@ -43,7 +43,7 @@ static void esp32_intmatrix_irq_handler(void *opaque, int n, int level)
 static inline uint8_t* get_map_entry(Esp32IntMatrixState* s, hwaddr addr)
 {
     int source_index = addr / sizeof(uint32_t);
-    if (source_index > ESP32_INT_MATRIX_INPUTS) {
+    if (source_index > ESP32_INT_MATRIX_INPUTS * ESP32_CPU_COUNT) {
         error_report("%s: source_index %d out of range", __func__, source_index);
         return NULL;
     }

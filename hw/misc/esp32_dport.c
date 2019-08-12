@@ -27,6 +27,32 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32DportState *s = ESP32_DPORT(opaque);
     uint64_t r = 0;
+    switch (addr) {
+    case A_DPORT_APPCPU_RESET:
+        r = s->appcpu_reset_state;
+        break;
+    case A_DPORT_APPCPU_CLK:
+        r = s->appcpu_clkgate_state;
+        break;
+    case A_DPORT_APPCPU_RUNSTALL:
+        r = s->appcpu_stall_state;
+        break;
+    case A_DPORT_APPCPU_BOOT_ADDR:
+        r = s->appcpu_boot_addr;
+        break;
+    case A_DPORT_PRO_CACHE_CTRL:
+        r = s->cache_state[0].cache_ctrl_reg;
+        break;
+    case A_DPORT_PRO_CACHE_CTRL1:
+        r = s->cache_state[0].cache_ctrl1_reg;
+        break;
+    case A_DPORT_APP_CACHE_CTRL:
+        r = s->cache_state[1].cache_ctrl_reg;
+        break;
+    case A_DPORT_APP_CACHE_CTRL1:
+        r = s->cache_state[1].cache_ctrl1_reg;
+        break;
+    }
 
     return r;
 }
@@ -35,6 +61,43 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
                               uint64_t value, unsigned int size)
 {
     Esp32DportState *s = ESP32_DPORT(opaque);
+    bool old_state;
+    switch (addr) {
+    case A_DPORT_APPCPU_RESET:
+        old_state = s->appcpu_reset_state;
+        s->appcpu_reset_state = value & 1;
+        if (old_state && !s->appcpu_reset_state) {
+            qemu_irq_pulse(s->appcpu_reset_req);
+        }
+        break;
+    case A_DPORT_APPCPU_CLK:
+        s->appcpu_clkgate_state = value & 1;
+        qemu_set_irq(s->appcpu_stall_req, s->appcpu_stall_state || !s->appcpu_clkgate_state);
+        break;
+    case A_DPORT_APPCPU_RUNSTALL:
+        s->appcpu_stall_state = value & 1;
+        qemu_set_irq(s->appcpu_stall_req, s->appcpu_stall_state || !s->appcpu_clkgate_state);
+        break;
+    case A_DPORT_APPCPU_BOOT_ADDR:
+        s->appcpu_boot_addr = value;
+        break;
+    case A_DPORT_PRO_CACHE_CTRL:
+        if (FIELD_EX32(value, DPORT_PRO_CACHE_CTRL, CACHE_FLUSH_ENA)) {
+            s->cache_state[0].cache_ctrl_reg |= R_DPORT_PRO_CACHE_CTRL_CACHE_FLUSH_DONE_MASK;
+        }
+        break;
+    case A_DPORT_PRO_CACHE_CTRL1:
+        s->cache_state[0].cache_ctrl1_reg = value;
+        break;
+    case A_DPORT_APP_CACHE_CTRL:
+        if (FIELD_EX32(value, DPORT_APP_CACHE_CTRL, CACHE_FLUSH_ENA)) {
+            s->cache_state[1].cache_ctrl_reg |= R_DPORT_APP_CACHE_CTRL_CACHE_FLUSH_DONE_MASK;
+        }
+        break;
+    case A_DPORT_APP_CACHE_CTRL1:
+        s->cache_state[1].cache_ctrl1_reg = value;
+        break;
+    }
 }
 
 static const MemoryRegionOps esp32_dport_ops = {
@@ -46,6 +109,11 @@ static const MemoryRegionOps esp32_dport_ops = {
 static void esp32_dport_reset(DeviceState *dev)
 {
     Esp32DportState *s = ESP32_DPORT(dev);
+
+    s->appcpu_boot_addr = 0;
+    s->appcpu_clkgate_state = false;
+    s->appcpu_reset_state = true;
+    s->appcpu_stall_state = false;
 }
 
 static void esp32_dport_realize(DeviceState *dev, Error **errp)
@@ -86,6 +154,9 @@ static void esp32_dport_init(Object *obj)
     object_initialize_child(obj, "crosscore_int", &s->crosscore_int, sizeof(s->crosscore_int), TYPE_ESP32_CROSSCORE_INT,
                             &error_abort, NULL);
     memory_region_add_subregion_overlap(&s->iomem, ESP32_DPORT_CROSSCORE_INT_BASE, &s->crosscore_int.iomem, -1);
+
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->appcpu_stall_req, ESP32_DPORT_APPCPU_STALL_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->appcpu_reset_req, ESP32_DPORT_APPCPU_RESET_GPIO, 1);
 }
 
 static Property esp32_dport_properties[] = {
