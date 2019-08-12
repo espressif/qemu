@@ -42,5 +42,6 @@ typedef struct Esp32DportState {
     int cpu_count;
     Esp32IntMatrixState intmatrix;
     Esp32CrosscoreInt   crosscore_int;
+    bool appcpu_stall_state;
 } Esp32DportState;
 

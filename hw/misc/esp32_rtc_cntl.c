@@ -14,21 +14,47 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "hw/hw.h"
+#include "hw/registerfields.h"
 #include "hw/sysbus.h"
 #include "hw/misc/esp32_reg.h"
 #include "hw/misc/esp32_rtc_cntl.h"
 
+static void esp32_rtc_update_cpu_stall(Esp32RtcCntlState* s);
 
 static uint64_t esp32_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32RtcCntlState *s = ESP32_RTC_CNTL(opaque);
     uint64_t r = 0;
     switch (addr) {
+    case A_RTC_CNTL_OPTIONS0:
+        r = s->options0_reg;
+        break;
+    case A_RTC_CNTL_TIME_UPDATE:
+        r = R_RTC_CNTL_TIME_UPDATE_VALID_MASK;
+        break;
+    case A_RTC_CNTL_TIME0:
+        r = s->time_reg & UINT32_MAX;
+        break;
+    case A_RTC_CNTL_TIME1:
+        r = s->time_reg >> 32;
+        break;
+
+    case A_RTC_CNTL_RESET_STATE:
+        r = FIELD_DP32(r, RTC_CNTL_RESET_STATE, RESET_CAUSE_PROCPU, s->reset_cause[0]);
+        r = FIELD_DP32(r, RTC_CNTL_RESET_STATE, RESET_CAUSE_APPCPU, s->reset_cause[1]);
+        r = FIELD_DP32(r, RTC_CNTL_RESET_STATE, PROCPU_STAT_VECTOR_SEL, s->stat_vector_sel[0]);
+        r = FIELD_DP32(r, RTC_CNTL_RESET_STATE, APPCPU_STAT_VECTOR_SEL, s->stat_vector_sel[1]);
+        break;
+
     case A_RTC_CNTL_STORE0:
     case A_RTC_CNTL_STORE1:
     case A_RTC_CNTL_STORE2:
     case A_RTC_CNTL_STORE3:
         r = s->scratch_reg[(addr - A_RTC_CNTL_STORE0) / 4];
+        break;
+
+    case A_RTC_CNTL_SW_CPU_STALL:
+        r = s->sw_cpu_stall_reg;
         break;
 
     case A_RTC_CNTL_STORE4:
@@ -47,11 +73,48 @@ static void esp32_rtc_cntl_write(void *opaque, hwaddr addr,
     Esp32RtcCntlState *s = ESP32_RTC_CNTL(opaque);
 
     switch (addr) {
+    case A_RTC_CNTL_OPTIONS0:
+        if (value & R_RTC_CNTL_OPTIONS0_SW_SYS_RESET_MASK) {
+            s->reset_cause[0] = ESP32_SW_SYS_RESET;
+            s->reset_cause[1] = ESP32_SW_SYS_RESET;
+            qemu_irq_pulse(s->dig_reset_req);
+            value &= ~(R_RTC_CNTL_OPTIONS0_SW_SYS_RESET_MASK);
+        }
+        if (value & R_RTC_CNTL_OPTIONS0_SW_APPCPU_RESET_MASK) {
+            s->reset_cause[1] = ESP32_SW_CPU_RESET;
+            qemu_irq_pulse(s->cpu_reset_req[1]);
+            value &= ~(R_RTC_CNTL_OPTIONS0_SW_APPCPU_RESET_MASK);
+        }
+        if (value & R_RTC_CNTL_OPTIONS0_SW_PROCPU_RESET_MASK) {
+            s->reset_cause[0] = ESP32_SW_CPU_RESET;
+            qemu_irq_pulse(s->cpu_reset_req[0]);
+            value &= ~(R_RTC_CNTL_OPTIONS0_SW_PROCPU_RESET_MASK);
+        }
+        s->options0_reg = value;
+        esp32_rtc_update_cpu_stall(s);
+        break;
+
+    case A_RTC_CNTL_TIME_UPDATE:
+        if (value & R_RTC_CNTL_TIME_UPDATE_UPDATE_MASK) {
+            s->time_reg = muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->rtc_slowclk_freq, NANOSECONDS_PER_SECOND);
+        }
+        break;
+
+    case A_RTC_CNTL_RESET_STATE:
+        s->stat_vector_sel[0] = FIELD_EX32(value, RTC_CNTL_RESET_STATE, PROCPU_STAT_VECTOR_SEL);
+        s->stat_vector_sel[1] = FIELD_EX32(value, RTC_CNTL_RESET_STATE, APPCPU_STAT_VECTOR_SEL);
+        break;
+
     case A_RTC_CNTL_STORE0:
     case A_RTC_CNTL_STORE1:
     case A_RTC_CNTL_STORE2:
     case A_RTC_CNTL_STORE3:
         s->scratch_reg[(addr - A_RTC_CNTL_STORE0) / 4] = value;
+        break;
+
+    case A_RTC_CNTL_SW_CPU_STALL:
+        s->sw_cpu_stall_reg = value;
+        esp32_rtc_update_cpu_stall(s);
         break;
 
     case A_RTC_CNTL_STORE4:
@@ -61,6 +124,23 @@ static void esp32_rtc_cntl_write(void *opaque, hwaddr addr,
         s->scratch_reg[(addr - A_RTC_CNTL_STORE4) / 4 + 4] = value;
         break;
     }
+}
+
+static void esp32_rtc_update_cpu_stall(Esp32RtcCntlState* s)
+{
+    uint32_t procpu_stall = (FIELD_EX32(s->sw_cpu_stall_reg, RTC_CNTL_SW_CPU_STALL, PROCPU_C1) << 2) |
+                            (FIELD_EX32(s->options0_reg, RTC_CNTL_OPTIONS0, SW_STALL_PROCPU_C0));
+
+    uint32_t appcpu_stall = (FIELD_EX32(s->sw_cpu_stall_reg, RTC_CNTL_SW_CPU_STALL, APPCPU_C1) << 2) |
+                            (FIELD_EX32(s->options0_reg, RTC_CNTL_OPTIONS0, SW_STALL_APPCPU_C0));
+
+    const uint32_t stall_magic_val = 0x86;
+
+    s->cpu_stall_state[0] = procpu_stall == stall_magic_val;
+    s->cpu_stall_state[1] = appcpu_stall == stall_magic_val;
+
+    qemu_set_irq(s->cpu_stall_req[0], s->cpu_stall_state[0]);
+    qemu_set_irq(s->cpu_stall_req[1], s->cpu_stall_state[1]);
 }
 
 static const MemoryRegionOps esp32_rtc_cntl_ops = {
@@ -88,6 +168,16 @@ static void esp32_rtc_cntl_init(Object *obj)
                           TYPE_ESP32_RTC_CNTL, ESP32_RTC_CNTL_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->dig_reset_req, ESP32_RTC_DIG_RESET_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_reset_req[0], ESP32_RTC_CPU_RESET_GPIO, ESP32_CPU_COUNT);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_stall_req[0], ESP32_RTC_CPU_STALL_GPIO, ESP32_CPU_COUNT);
+
+    for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
+        s->reset_cause[i] = ESP32_POWERON_RESET;
+        s->stat_vector_sel[i] = true;
+    }
+    s->rtc_slowclk_freq = 150000;
+    s->rtc_fastclk_freq = 8000000;
 }
 
 static Property esp32_rtc_cntl_properties[] = {
