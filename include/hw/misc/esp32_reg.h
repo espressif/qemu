@@ -56,6 +56,8 @@
 #define DR_REG_UART2_BASE                       0x3ff6E000
 #define DR_REG_PWM2_BASE                        0x3ff6F000
 #define DR_REG_PWM3_BASE                        0x3ff70000
+#define DR_REG_RNG_BASE                         0x60035000
+#define DR_REG_ANA_BASE                         0x6000e000
 
 #define ETS_WIFI_MAC_INTR_SOURCE                0/**< interrupt of WiFi MAC, level*/
 #define ETS_WIFI_MAC_NMI_SOURCE                 1/**< interrupt of WiFi MAC, NMI, use if MAC have bug to fix in NMI*/
@@ -133,5 +135,7 @@
 #define ESP32_INT_MATRIX_INPUTS     69
 #define ESP32_CPU_COUNT             2
 #define ESP32_UART_COUNT            3
+#define ESP32_FRC_COUNT             2
+#define ESP32_TIMG_COUNT            2
 #define ESP32_RTC_CNTL_SCRATCH_REG_COUNT     8
 

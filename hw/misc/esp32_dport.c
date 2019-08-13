@@ -40,6 +40,9 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
     case A_DPORT_APPCPU_BOOT_ADDR:
         r = s->appcpu_boot_addr;
         break;
+    case A_DPORT_CPU_PER_CONF:
+        r = s->cpuperiod_sel;
+        break;
     case A_DPORT_PRO_CACHE_CTRL:
         r = s->cache_state[0].cache_ctrl_reg;
         break;
@@ -80,6 +83,10 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
         break;
     case A_DPORT_APPCPU_BOOT_ADDR:
         s->appcpu_boot_addr = value;
+        break;
+    case A_DPORT_CPU_PER_CONF:
+        s->cpuperiod_sel = value & R_DPORT_CPU_PER_CONF_CPUPERIOD_SEL_MASK;
+        qemu_irq_pulse(s->clk_update_req);
         break;
     case A_DPORT_PRO_CACHE_CTRL:
         if (FIELD_EX32(value, DPORT_PRO_CACHE_CTRL, CACHE_FLUSH_ENA)) {
@@ -157,6 +164,7 @@ static void esp32_dport_init(Object *obj)
 
     qdev_init_gpio_out_named(DEVICE(sbd), &s->appcpu_stall_req, ESP32_DPORT_APPCPU_STALL_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->appcpu_reset_req, ESP32_DPORT_APPCPU_RESET_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->clk_update_req, ESP32_DPORT_CLK_UPDATE_GPIO, 1);
 }
 
 static Property esp32_dport_properties[] = {

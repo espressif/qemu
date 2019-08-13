@@ -51,21 +51,27 @@ typedef struct Esp32DportState {
     Esp32CacheState cache_state[ESP32_CPU_COUNT];
     qemu_irq appcpu_stall_req;
     qemu_irq appcpu_reset_req;
+    qemu_irq clk_update_req;
 
     bool appcpu_reset_state;
     bool appcpu_stall_state;
     bool appcpu_clkgate_state;
     uint32_t appcpu_boot_addr;
+    uint32_t cpuperiod_sel;
 } Esp32DportState;
 
 #define ESP32_DPORT_APPCPU_STALL_GPIO   "appcpu-stall"
 #define ESP32_DPORT_APPCPU_RESET_GPIO   "appcpu-reset"
+#define ESP32_DPORT_CLK_UPDATE_GPIO     "clk-update"
 
 
 REG32(DPORT_APPCPU_RESET, 0x2c)
 REG32(DPORT_APPCPU_CLK, 0x30)
 REG32(DPORT_APPCPU_RUNSTALL, 0x34)
 REG32(DPORT_APPCPU_BOOT_ADDR, 0x38)
+
+REG32(DPORT_CPU_PER_CONF, 0x3c)
+    FIELD(DPORT_CPU_PER_CONF, CPUPERIOD_SEL, 0, 2)
 
 REG32(DPORT_PRO_CACHE_CTRL, 0x40)
     FIELD(DPORT_PRO_CACHE_CTRL, CACHE_FLUSH_DONE, 5, 1)

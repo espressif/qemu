@@ -12,6 +12,7 @@
 #define ESP32_RTC_DIG_RESET_GPIO    "dig-reset"
 #define ESP32_RTC_CPU_RESET_GPIO    "cpu-reset"
 #define ESP32_RTC_CPU_STALL_GPIO    "cpu-stall"
+#define ESP32_RTC_CLK_UPDATE_GPIO   "clk-update"
 
 typedef enum Esp32ResetCause {
     ESP32_POWERON_RESET = 1,
@@ -30,6 +31,24 @@ typedef enum Esp32ResetCause {
     ESP32_RTCWDT_RTC_RESET = 16
 } Esp32ResetCause;
 
+typedef enum Esp32SocClkSel {
+    ESP32_SOC_CLK_XTAL = 0,
+    ESP32_SOC_CLK_PLL = 1,
+    ESP32_SOC_CLK_8M = 2,
+    ESP32_SOC_CLK_APLL = 3
+} Esp32SocClkSel;
+
+typedef enum Esp32FastClkSel {
+    ESP32_FAST_CLK_XTALD4 = 0,
+    ESP32_FAST_CLK_8M = 1
+} Esp32FastClkSel;
+
+typedef enum Esp32SlowClkSel {
+    ESP32_SLOW_CLK_RC = 0,
+    ESP32_SLOW_CLK_32KXTAL = 1,
+    ESP32_SLOW_CLK_8MD256 = 2
+} Esp32SlowClkSel;
+
 typedef struct Esp32RtcCntlState {
     SysBusDevice parent_obj;
 
@@ -38,10 +57,16 @@ typedef struct Esp32RtcCntlState {
     qemu_irq dig_reset_req;
     qemu_irq cpu_reset_req[ESP32_CPU_COUNT];
     qemu_irq cpu_stall_req[ESP32_CPU_COUNT];
+    qemu_irq clk_update;
     bool cpu_stall_state[ESP32_CPU_COUNT];
 
-    uint32_t rtc_slowclk_freq;
+    uint32_t xtal_apb_freq;
+    uint32_t pll_apb_freq;
+    Esp32SocClkSel soc_clk;
+    Esp32FastClkSel rtc_fastclk;
     uint32_t rtc_fastclk_freq;
+    Esp32SlowClkSel rtc_slowclk;
+    uint32_t rtc_slowclk_freq;
     int64_t time_base_ns;
 
     uint32_t options0_reg;
@@ -75,6 +100,11 @@ REG32(RTC_CNTL_STORE0, 0x4c)
 REG32(RTC_CNTL_STORE1, 0x50)
 REG32(RTC_CNTL_STORE2, 0x54)
 REG32(RTC_CNTL_STORE3, 0x58)
+
+REG32(RTC_CNTL_CLK_CONF, 0x70)
+    FIELD(RTC_CNTL_CLK_CONF, ANA_CLK_RTC_SEL, 30, 2)
+    FIELD(RTC_CNTL_CLK_CONF, FAST_CLK_RTC_SEL, 29, 1)
+    FIELD(RTC_CNTL_CLK_CONF, SOC_CLK_SEL, 27, 2)
 
 REG32(RTC_CNTL_SW_CPU_STALL, 0xac)
     FIELD(RTC_CNTL_SW_CPU_STALL, PROCPU_C1, 26, 6)

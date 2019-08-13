@@ -22,6 +22,8 @@
 #include "hw/misc/esp32_gpio.h"
 #include "hw/misc/esp32_dport.h"
 #include "hw/misc/esp32_rtc_cntl.h"
+#include "hw/timer/esp32_frc_timer.h"
+#include "hw/timer/esp32_timg.h"
 #include "hw/xtensa/xtensa_memory.h"
 #include "hw/misc/unimp.h"
 #include "elf.h"
@@ -80,6 +82,8 @@ typedef struct Esp32SocState {
     ESP32UARTState uart[ESP32_UART_COUNT];
     Esp32GpioState gpio;
     Esp32RtcCntlState rtc_cntl;
+    Esp32FrcTimerState frc_timer[ESP32_FRC_COUNT];
+    Esp32TimgState timg[ESP32_TIMG_COUNT];
 
     uint32_t requested_reset;
 } Esp32SocState;
@@ -119,6 +123,12 @@ static void esp32_soc_reset(DeviceState *dev)
         for (int i = 0; i < ESP32_UART_COUNT; ++i) {
             device_reset(DEVICE(&s->uart));
         }
+        for (int i = 0; i < ESP32_FRC_COUNT; ++i) {
+            device_reset(DEVICE(&s->frc_timer[i]));
+        }
+        for (int i = 0; i < ESP32_TIMG_COUNT; ++i) {
+            device_reset(DEVICE(&s->timg[i]));
+        }
     }
     if (s->requested_reset & ESP32_SOC_RESET_PROCPU) {
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
@@ -143,6 +153,27 @@ static void esp32_cpu_stall(void* opaque, int n, int level)
     }
 
     xtensa_runstall(&s->cpu[n].env, stall);
+}
+
+static void esp32_clk_update(void* opaque, int n, int level)
+{
+    Esp32SocState *s = ESP32_SOC(opaque);
+    if (!level) {
+        return;
+    }
+
+    /* APB clock */
+    uint32_t apb_clk_freq, cpu_clk_freq;
+    if (s->rtc_cntl.soc_clk == ESP32_SOC_CLK_PLL) {
+        const uint32_t cpu_clk_mul[] = {1, 2, 3};
+        apb_clk_freq = s->rtc_cntl.pll_apb_freq;
+        cpu_clk_freq = cpu_clk_mul[s->dport.cpuperiod_sel] * apb_clk_freq;
+    } else {
+        apb_clk_freq = s->rtc_cntl.xtal_apb_freq;
+        cpu_clk_freq = apb_clk_freq;
+    }
+    qdev_prop_set_int32(DEVICE(&s->frc_timer), "apb_freq", apb_clk_freq);
+    *(uint32_t*)(&s->cpu[0].env.config->clock_freq_khz) = cpu_clk_freq;
 }
 
 static void esp32_soc_realize(DeviceState *dev, Error **errp)
@@ -223,7 +254,9 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     qdev_connect_gpio_out_named(DEVICE(&s->dport), ESP32_DPORT_APPCPU_RESET_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_RESET_GPIO, 1));
     qdev_connect_gpio_out_named(DEVICE(&s->dport), ESP32_DPORT_APPCPU_STALL_GPIO, 0,
-                                    qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, 1));
+                                qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, 1));
+    qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_DPORT_CLK_UPDATE_GPIO, 0,
+                                qdev_get_gpio_in_named(dev, ESP32_RTC_CLK_UPDATE_GPIO, 0));
 
     object_property_set_bool(OBJECT(&s->rtc_cntl), true, "realized", &error_abort);
 
@@ -232,18 +265,36 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
 
     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_RTC_DIG_RESET_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_DIG_RESET_GPIO, 0));
+    qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_RTC_CLK_UPDATE_GPIO, 0,
+                                qdev_get_gpio_in_named(dev, ESP32_RTC_CLK_UPDATE_GPIO, 0));
     for (int i = 0; i < ms->smp.cpus; ++i) {
         qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_RTC_CPU_RESET_GPIO, i,
-                                        qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_RESET_GPIO, i));
+                                    qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_RESET_GPIO, i));
         qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_RTC_CPU_STALL_GPIO, i,
-                                                qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, i));
+                                    qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, i));
     }
 
-    create_unimplemented_device("esp32.frc0", DR_REG_FRC_TIMER_BASE, 0x1000);
+    for (int i = 0; i < ESP32_FRC_COUNT; ++i) {
+        object_property_set_bool(OBJECT(&s->frc_timer[i]), true, "realized", &error_abort);
+
+        MemoryRegion *frc_timer = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->frc_timer[i]), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_FRC_TIMER_BASE + i * ESP32_FRC_TIMER_STRIDE, frc_timer, 0);
+
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->frc_timer[i]), 0,
+                           qdev_get_gpio_in(DEVICE(&s->dport.intmatrix), ETS_TIMER1_INTR_SOURCE + i));
+    }
+
+    for (int i = 0; i < ESP32_TIMG_COUNT; ++i) {
+        const hwaddr timg_base[] = {DR_REG_TIMERGROUP0_BASE, DR_REG_TIMERGROUP1_BASE};
+        object_property_set_bool(OBJECT(&s->timg[i]), true, "realized", &error_abort);
+
+        MemoryRegion *timg = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->timg[i]), 0);
+        memory_region_add_subregion_overlap(sys_mem, timg_base[i], timg, 0);
+    }
+
+    create_unimplemented_device("esp32.rng", DR_REG_RNG_BASE, 0x1000);
+    create_unimplemented_device("esp32.analog", DR_REG_ANA_BASE, 0x1000);
     create_unimplemented_device("esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
-    create_unimplemented_device("esp32.uart1", DR_REG_UART1_BASE, 0x1000);
-    create_unimplemented_device("esp32.tg0", DR_REG_TIMERGROUP0_BASE, 0x1000);
-    create_unimplemented_device("esp32.tg1", DR_REG_TIMERGROUP1_BASE, 0x1000);
     create_unimplemented_device("esp32.efuse", DR_REG_EFUSE_BASE, 0x1000);
     create_unimplemented_device("esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
     create_unimplemented_device("esp32.hinf", DR_REG_HINF_BASE, 0x1000);
@@ -254,6 +305,10 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("esp32.spi2", DR_REG_SPI2_BASE, 0x1000);
     create_unimplemented_device("esp32.spi3", DR_REG_SPI3_BASE, 0x1000);
     create_unimplemented_device("esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
+    create_unimplemented_device("esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
+    create_unimplemented_device("esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
+    create_unimplemented_device("esp32.i2c0", DR_REG_I2C_EXT_BASE, 0x1000);
+    create_unimplemented_device("esp32.i2c1", DR_REG_I2C1_EXT_BASE, 0x1000);
 
     qemu_register_reset((QEMUResetHandler*) esp32_soc_reset, dev);
 }
@@ -288,9 +343,24 @@ static void esp32_soc_init(Object *obj)
     object_initialize_child(obj, "rtc_cntl", &s->rtc_cntl, sizeof(s->rtc_cntl),
                             TYPE_ESP32_RTC_CNTL, &error_abort, NULL);
 
+    for (int i = 0; i < ESP32_FRC_COUNT; ++i) {
+        char name[16];
+        snprintf(name, sizeof(name), "frc%d", i);
+        object_initialize_child(obj, name, &s->frc_timer[i], sizeof(s->frc_timer[i]),
+                                TYPE_ESP32_FRC_TIMER, &error_abort, NULL);
+    }
+
+    for (int i = 0; i < ESP32_TIMG_COUNT; ++i) {
+        char name[16];
+        snprintf(name, sizeof(name), "timg%d", i);
+        object_initialize_child(obj, name, &s->timg[i], sizeof(s->timg[i]),
+                                TYPE_ESP32_TIMG, &error_abort, NULL);
+    }
+
     qdev_init_gpio_in_named(DEVICE(s), esp32_dig_reset, ESP32_RTC_DIG_RESET_GPIO, 1);
     qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_reset, ESP32_RTC_CPU_RESET_GPIO, ESP32_CPU_COUNT);
     qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_stall, ESP32_RTC_CPU_STALL_GPIO, ESP32_CPU_COUNT);
+    qdev_init_gpio_in_named(DEVICE(s), esp32_clk_update, ESP32_RTC_CLK_UPDATE_GPIO, 1);
 }
 
 static Property esp32_soc_properties[] = {
