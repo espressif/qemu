@@ -209,7 +209,6 @@ static void esp32_uart_realize(DeviceState *dev, Error **errp)
 {
     ESP32UARTState *s = ESP32_UART(dev);
 
-    qemu_chr_fe_init(&s->chr, serial_hd(0), &error_abort);
     qemu_chr_fe_set_handlers(&s->chr, uart_can_receive, uart_receive,
                              uart_event, NULL, s, NULL, true);
 }

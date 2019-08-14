@@ -376,7 +376,7 @@ static void esp32_soc_init(Object *obj)
                                 TYPE_ESP32_UART, &error_abort, NULL);
     }
 
-    object_property_add_alias(obj, "serial0", OBJECT(&s->uart), "chardev",
+    object_property_add_alias(obj, "serial0", OBJECT(&s->uart[0]), "chardev",
                               &error_abort);
 
     object_initialize_child(obj, "gpio", &s->gpio, sizeof(s->gpio),
@@ -464,8 +464,8 @@ static void esp32_machine_inst_init(MachineState *machine)
 {
     Esp32SocState *s = g_new0(Esp32SocState, 1);
 
-    DriveInfo *dinfo = drive_get_next(IF_MTD);
     BlockBackend* blk = NULL;
+    DriveInfo *dinfo = drive_get_next(IF_MTD);
     if (dinfo) {
         qemu_log("Adding SPI flash device\n");
         blk = blk_by_legacy_dinfo(dinfo);
@@ -473,13 +473,13 @@ static void esp32_machine_inst_init(MachineState *machine)
         qemu_log("Not initializing SPI Flash\n");
     }
 
-
     object_initialize_child(OBJECT(machine), "soc", s, sizeof(*s),
                             TYPE_ESP32_SOC, &error_abort, NULL);
 
     if (blk) {
         s->dport.flash_blk = blk;
     }
+    qdev_prop_set_chr(DEVICE(s), "serial0", serial_hd(0));
 
     object_property_set_bool(OBJECT(s), true, "realized", &error_abort);
 
