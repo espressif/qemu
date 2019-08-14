@@ -201,7 +201,7 @@ static void esp32_rtc_cntl_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(sbd), &s->dig_reset_req, ESP32_RTC_DIG_RESET_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_reset_req[0], ESP32_RTC_CPU_RESET_GPIO, ESP32_CPU_COUNT);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_stall_req[0], ESP32_RTC_CPU_STALL_GPIO, ESP32_CPU_COUNT);
-    qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_stall_req[0], ESP32_RTC_CLK_UPDATE_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->clk_update, ESP32_RTC_CLK_UPDATE_GPIO, 1);
 
     for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
         s->reset_cause[i] = ESP32_POWERON_RESET;
