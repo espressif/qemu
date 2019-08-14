@@ -186,6 +186,25 @@ static void esp32_clk_update(void* opaque, int n, int level)
     *(uint32_t*)(&s->cpu[0].env.config->clock_freq_khz) = cpu_clk_freq;
 }
 
+static void esp32_soc_add_periph_device(MemoryRegion *dest, void* dev, hwaddr dport_base_addr)
+{
+    MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0);
+    memory_region_add_subregion_overlap(dest, dport_base_addr, mr, 0);
+    MemoryRegion *mr_apb = g_new(MemoryRegion, 1);
+    char *name = g_strdup_printf("mr-apb-0x%08x", (uint32_t) dport_base_addr);
+    memory_region_init_alias(mr_apb, OBJECT(dev), name, mr, 0, memory_region_size(mr));
+    memory_region_add_subregion_overlap(dest, dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE, mr_apb, 0);
+    g_free(name);
+}
+
+static void esp32_soc_add_unimp_device(MemoryRegion *dest, const char* name, hwaddr dport_base_addr, size_t size)
+{
+    create_unimplemented_device(name, dport_base_addr, size);
+    char * name_apb = g_strdup_printf("%s-apb", name);
+    create_unimplemented_device(name_apb, dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE, size);
+    g_free(name_apb);
+}
+
 static void esp32_soc_realize(DeviceState *dev, Error **errp)
 {
     Esp32SocState *s = ESP32_SOC(dev);
@@ -244,29 +263,17 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
         object_property_set_bool(OBJECT(&s->cpu[i]), true, "realized", &error_abort);
     }
 
-    for (int i = 0; i < ESP32_UART_COUNT; ++i) {
-        const hwaddr uart_base[] = {DR_REG_UART_BASE, DR_REG_UART1_BASE, DR_REG_UART2_BASE};
-        object_property_set_bool(OBJECT(&s->uart[i]), true, "realized", &error_abort);
-
-        MemoryRegion *uart = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->uart[i]), 0);
-        memory_region_add_subregion_overlap(sys_mem, uart_base[i], uart, 0);
-    }
-
-    object_property_set_bool(OBJECT(&s->gpio), true, "realized", &error_abort);
-
-    MemoryRegion *gpio = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->gpio), 0);
-    memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, gpio, 0);
-
     object_property_set_bool(OBJECT(&s->dport), true, "realized", &error_abort);
 
-    MemoryRegion *dport = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->dport), 0);
-    memory_region_add_subregion(sys_mem, DR_REG_DPORT_BASE, dport);
+    memory_region_add_subregion(sys_mem, DR_REG_DPORT_BASE,
+                                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->dport), 0));
     qdev_connect_gpio_out_named(DEVICE(&s->dport), ESP32_DPORT_APPCPU_RESET_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_RESET_GPIO, 1));
     qdev_connect_gpio_out_named(DEVICE(&s->dport), ESP32_DPORT_APPCPU_STALL_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, 1));
     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_DPORT_CLK_UPDATE_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_CLK_UPDATE_GPIO, 0));
+    DeviceState* intmatrix_dev = DEVICE(&s->dport.intmatrix);
 
     if (s->dport.flash_blk) {
         for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
@@ -278,9 +285,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     }
 
     object_property_set_bool(OBJECT(&s->rtc_cntl), true, "realized", &error_abort);
-
-    MemoryRegion *rtc_cntl = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rtc_cntl), 0);
-    memory_region_add_subregion(sys_mem, DR_REG_RTCCNTL_BASE, rtc_cntl);
+    esp32_soc_add_periph_device(sys_mem, &s->rtc_cntl, DR_REG_RTCCNTL_BASE);
 
     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_RTC_DIG_RESET_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_DIG_RESET_GPIO, 0));
@@ -293,22 +298,31 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
                                     qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, i));
     }
 
+    object_property_set_bool(OBJECT(&s->gpio), true, "realized", &error_abort);
+    esp32_soc_add_periph_device(sys_mem, &s->gpio, DR_REG_GPIO_BASE);
+
+    for (int i = 0; i < ESP32_UART_COUNT; ++i) {
+        const hwaddr uart_base[] = {DR_REG_UART_BASE, DR_REG_UART1_BASE, DR_REG_UART2_BASE};
+        object_property_set_bool(OBJECT(&s->uart[i]), true, "realized", &error_abort);
+        esp32_soc_add_periph_device(sys_mem, &s->uart[i], uart_base[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->uart[i]), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_UART0_INTR_SOURCE + i));
+    }
+
     for (int i = 0; i < ESP32_FRC_COUNT; ++i) {
         object_property_set_bool(OBJECT(&s->frc_timer[i]), true, "realized", &error_abort);
 
-        MemoryRegion *frc_timer = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->frc_timer[i]), 0);
-        memory_region_add_subregion_overlap(sys_mem, DR_REG_FRC_TIMER_BASE + i * ESP32_FRC_TIMER_STRIDE, frc_timer, 0);
+        esp32_soc_add_periph_device(sys_mem, &s->frc_timer[i], DR_REG_FRC_TIMER_BASE + i * ESP32_FRC_TIMER_STRIDE);
 
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->frc_timer[i]), 0,
-                           qdev_get_gpio_in(DEVICE(&s->dport.intmatrix), ETS_TIMER1_INTR_SOURCE + i));
+                           qdev_get_gpio_in(intmatrix_dev, ETS_TIMER1_INTR_SOURCE + i));
     }
 
     for (int i = 0; i < ESP32_TIMG_COUNT; ++i) {
         const hwaddr timg_base[] = {DR_REG_TIMERGROUP0_BASE, DR_REG_TIMERGROUP1_BASE};
         object_property_set_bool(OBJECT(&s->timg[i]), true, "realized", &error_abort);
 
-        MemoryRegion *timg = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->timg[i]), 0);
-        memory_region_add_subregion_overlap(sys_mem, timg_base[i], timg, 0);
+        esp32_soc_add_periph_device(sys_mem, &s->timg[i], timg_base[i]);
     }
 
     for (int i = 0; i < ESP32_SPI_COUNT; ++i) {
@@ -317,26 +331,25 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
         };
         object_property_set_bool(OBJECT(&s->spi[i]), true, "realized", &error_abort);
 
-        MemoryRegion *spi = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->spi[i]), 0);
-        memory_region_add_subregion_overlap(sys_mem, spi_base[i], spi, 0);
+        esp32_soc_add_periph_device(sys_mem, &s->spi[i], spi_base[i]);
 
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi[i]), 0,
-                           qdev_get_gpio_in(DEVICE(&s->dport.intmatrix), ETS_SPI0_INTR_SOURCE + i));
+                           qdev_get_gpio_in(intmatrix_dev, ETS_SPI0_INTR_SOURCE + i));
     }
 
-    create_unimplemented_device("esp32.rng", DR_REG_RNG_BASE, 0x1000);
-    create_unimplemented_device("esp32.analog", DR_REG_ANA_BASE, 0x1000);
-    create_unimplemented_device("esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
-    create_unimplemented_device("esp32.efuse", DR_REG_EFUSE_BASE, 0x1000);
-    create_unimplemented_device("esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
-    create_unimplemented_device("esp32.hinf", DR_REG_HINF_BASE, 0x1000);
-    create_unimplemented_device("esp32.slc", DR_REG_SLC_BASE, 0x1000);
-    create_unimplemented_device("esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
-    create_unimplemented_device("esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
-    create_unimplemented_device("esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
-    create_unimplemented_device("esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
-    create_unimplemented_device("esp32.i2c0", DR_REG_I2C_EXT_BASE, 0x1000);
-    create_unimplemented_device("esp32.i2c1", DR_REG_I2C1_EXT_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.rng", DR_REG_RNG_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.efuse", DR_REG_EFUSE_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.i2c0", DR_REG_I2C_EXT_BASE, 0x1000);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.i2c1", DR_REG_I2C1_EXT_BASE, 0x1000);
 
     qemu_register_reset((QEMUResetHandler*) esp32_soc_reset, dev);
 }

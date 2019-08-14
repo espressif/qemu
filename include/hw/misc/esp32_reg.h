@@ -8,6 +8,7 @@
 #define DR_REG_FLASH_MMU_TABLE_PRO              0x3ff10000
 #define DR_REG_FLASH_MMU_TABLE_APP              0x3ff12000
 #define DR_REG_DPORT_END                        0x3ff13FFC
+#define DR_REG_DPORT_APB_BASE                   0x3ff40000
 #define DR_REG_UART_BASE                        0x3ff40000
 #define DR_REG_SPI1_BASE                        0x3ff42000
 #define DR_REG_SPI0_BASE                        0x3ff43000
@@ -23,6 +24,7 @@
 #define DR_REG_IO_MUX_BASE                      0x3ff49000
 #define DR_REG_HINF_BASE                        0x3ff4B000
 #define DR_REG_UHCI1_BASE                       0x3ff4C000
+#define DR_REG_ANA_BASE                         0x3ff4E000
 #define DR_REG_I2S_BASE                         0x3ff4F000
 #define DR_REG_UART1_BASE                       0x3ff50000
 #define DR_REG_BT_BASE                          0x3ff51000
@@ -56,8 +58,9 @@
 #define DR_REG_UART2_BASE                       0x3ff6E000
 #define DR_REG_PWM2_BASE                        0x3ff6F000
 #define DR_REG_PWM3_BASE                        0x3ff70000
-#define DR_REG_RNG_BASE                         0x60035000
-#define DR_REG_ANA_BASE                         0x6000e000
+#define DR_REG_RNG_BASE                         0x3ff75000
+
+#define APB_REG_BASE                            0x60000000
 
 #define ETS_WIFI_MAC_INTR_SOURCE                0/**< interrupt of WiFi MAC, level*/
 #define ETS_WIFI_MAC_NMI_SOURCE                 1/**< interrupt of WiFi MAC, NMI, use if MAC have bug to fix in NMI*/
