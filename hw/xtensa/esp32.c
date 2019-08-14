@@ -22,6 +22,7 @@
 #include "hw/misc/esp32_gpio.h"
 #include "hw/misc/esp32_dport.h"
 #include "hw/misc/esp32_rtc_cntl.h"
+#include "hw/misc/esp32_rng.h"
 #include "hw/timer/esp32_frc_timer.h"
 #include "hw/timer/esp32_timg.h"
 #include "hw/ssi/esp32_spi.h"
@@ -85,6 +86,7 @@ typedef struct Esp32SocState {
     Esp32DportState dport;
     ESP32UARTState uart[ESP32_UART_COUNT];
     Esp32GpioState gpio;
+    Esp32RngState rng;
     Esp32RtcCntlState rtc_cntl;
     Esp32FrcTimerState frc_timer[ESP32_FRC_COUNT];
     Esp32TimgState timg[ESP32_TIMG_COUNT];
@@ -337,9 +339,12 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
                            qdev_get_gpio_in(intmatrix_dev, ETS_SPI0_INTR_SOURCE + i));
     }
 
-    esp32_soc_add_unimp_device(sys_mem, "esp32.rng", DR_REG_RNG_BASE, 0x1000);
+    object_property_set_bool(OBJECT(&s->rng), true, "realized", &error_abort);
+    esp32_soc_add_periph_device(sys_mem, &s->rng, ESP32_RNG_BASE);
+
     esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
+    esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_SENS_BASE, 0x400);
     esp32_soc_add_unimp_device(sys_mem, "esp32.efuse", DR_REG_EFUSE_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
@@ -418,6 +423,10 @@ static void esp32_soc_init(Object *obj)
         object_initialize_child(obj, name, &s->spi[i], sizeof(s->spi[i]),
                                 TYPE_ESP32_SPI, &error_abort, NULL);
     }
+
+    object_initialize_child(obj, "rng", &s->rng, sizeof(s->rng),
+                            TYPE_ESP32_RNG, &error_abort, NULL);
+
 
     qdev_init_gpio_in_named(DEVICE(s), esp32_dig_reset, ESP32_RTC_DIG_RESET_GPIO, 1);
     qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_reset, ESP32_RTC_CPU_RESET_GPIO, ESP32_CPU_COUNT);

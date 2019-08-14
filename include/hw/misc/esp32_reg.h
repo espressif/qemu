@@ -58,7 +58,7 @@
 #define DR_REG_UART2_BASE                       0x3ff6E000
 #define DR_REG_PWM2_BASE                        0x3ff6F000
 #define DR_REG_PWM3_BASE                        0x3ff70000
-#define DR_REG_RNG_BASE                         0x3ff75000
+#define DR_REG_WDEV_BASE                        0x3ff75000
 
 #define APB_REG_BASE                            0x60000000
 
