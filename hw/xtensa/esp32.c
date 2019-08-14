@@ -24,8 +24,11 @@
 #include "hw/misc/esp32_rtc_cntl.h"
 #include "hw/timer/esp32_frc_timer.h"
 #include "hw/timer/esp32_timg.h"
+#include "hw/ssi/esp32_spi.h"
 #include "hw/xtensa/xtensa_memory.h"
 #include "hw/misc/unimp.h"
+#include "sysemu/blockdev.h"
+#include "sysemu/block-backend.h"
 #include "elf.h"
 
 #define TYPE_ESP32_SOC "xtensa.esp32"
@@ -84,6 +87,7 @@ typedef struct Esp32SocState {
     Esp32RtcCntlState rtc_cntl;
     Esp32FrcTimerState frc_timer[ESP32_FRC_COUNT];
     Esp32TimgState timg[ESP32_TIMG_COUNT];
+    Esp32SpiState spi[ESP32_SPI_COUNT];
 
     uint32_t requested_reset;
 } Esp32SocState;
@@ -128,6 +132,9 @@ static void esp32_soc_reset(DeviceState *dev)
         }
         for (int i = 0; i < ESP32_TIMG_COUNT; ++i) {
             device_reset(DEVICE(&s->timg[i]));
+        }
+        for (int i = 0; i < ESP32_SPI_COUNT; ++i) {
+            device_reset(DEVICE(&s->spi[i]));
         }
     }
     if (s->requested_reset & ESP32_SOC_RESET_PROCPU) {
@@ -292,6 +299,19 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
         memory_region_add_subregion_overlap(sys_mem, timg_base[i], timg, 0);
     }
 
+    for (int i = 0; i < ESP32_SPI_COUNT; ++i) {
+        const hwaddr spi_base[] = {
+            DR_REG_SPI0_BASE, DR_REG_SPI1_BASE, DR_REG_SPI2_BASE, DR_REG_SPI3_BASE
+        };
+        object_property_set_bool(OBJECT(&s->spi[i]), true, "realized", &error_abort);
+
+        MemoryRegion *spi = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->spi[i]), 0);
+        memory_region_add_subregion_overlap(sys_mem, spi_base[i], spi, 0);
+
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi[i]), 0,
+                           qdev_get_gpio_in(DEVICE(&s->dport.intmatrix), ETS_SPI0_INTR_SOURCE + i));
+    }
+
     create_unimplemented_device("esp32.rng", DR_REG_RNG_BASE, 0x1000);
     create_unimplemented_device("esp32.analog", DR_REG_ANA_BASE, 0x1000);
     create_unimplemented_device("esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
@@ -300,10 +320,6 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("esp32.hinf", DR_REG_HINF_BASE, 0x1000);
     create_unimplemented_device("esp32.slc", DR_REG_SLC_BASE, 0x1000);
     create_unimplemented_device("esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
-    create_unimplemented_device("esp32.spi0", DR_REG_SPI0_BASE, 0x1000);
-    create_unimplemented_device("esp32.spi1", DR_REG_SPI1_BASE, 0x1000);
-    create_unimplemented_device("esp32.spi2", DR_REG_SPI2_BASE, 0x1000);
-    create_unimplemented_device("esp32.spi3", DR_REG_SPI3_BASE, 0x1000);
     create_unimplemented_device("esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
     create_unimplemented_device("esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
     create_unimplemented_device("esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
@@ -317,15 +333,15 @@ static void esp32_soc_init(Object *obj)
 {
     Esp32SocState *s = ESP32_SOC(obj);
     MachineState *ms = MACHINE(qdev_get_machine());
+    char name[16];
+
 
     for (int i = 0; i < ms->smp.cpus; ++i) {
-        char name[16];
         snprintf(name, sizeof(name), "cpu%d", i);
         object_initialize_child(obj, name, &s->cpu[i], sizeof(s->cpu[i]), TYPE_ESP32_CPU, &error_abort, NULL);
     }
 
     for (int i = 0; i < ESP32_UART_COUNT; ++i) {
-        char name[16];
         snprintf(name, sizeof(name), "uart%d", i);
         object_initialize_child(obj, name, &s->uart[i], sizeof(s->uart[i]),
                                 TYPE_ESP32_UART, &error_abort, NULL);
@@ -344,17 +360,21 @@ static void esp32_soc_init(Object *obj)
                             TYPE_ESP32_RTC_CNTL, &error_abort, NULL);
 
     for (int i = 0; i < ESP32_FRC_COUNT; ++i) {
-        char name[16];
         snprintf(name, sizeof(name), "frc%d", i);
         object_initialize_child(obj, name, &s->frc_timer[i], sizeof(s->frc_timer[i]),
                                 TYPE_ESP32_FRC_TIMER, &error_abort, NULL);
     }
 
     for (int i = 0; i < ESP32_TIMG_COUNT; ++i) {
-        char name[16];
         snprintf(name, sizeof(name), "timg%d", i);
         object_initialize_child(obj, name, &s->timg[i], sizeof(s->timg[i]),
                                 TYPE_ESP32_TIMG, &error_abort, NULL);
+    }
+
+    for (int i = 0; i < ESP32_SPI_COUNT; ++i) {
+        snprintf(name, sizeof(name), "spi%d", i);
+        object_initialize_child(obj, name, &s->spi[i], sizeof(s->spi[i]),
+                                TYPE_ESP32_SPI, &error_abort, NULL);
     }
 
     qdev_init_gpio_in_named(DEVICE(s), esp32_dig_reset, ESP32_RTC_DIG_RESET_GPIO, 1);
@@ -399,14 +419,39 @@ static uint64_t translate_phys_addr(void *opaque, uint64_t addr)
     return cpu_get_phys_page_debug(CPU(cpu), addr);
 }
 
+static void esp32_machine_init_spi_flash(MachineState *machine, Esp32SocState *s, BlockBackend* blk)
+{
+    /* "main" flash chip is attached to SPI1 */
+    DeviceState *spi_master = DEVICE(&s->spi[1]);
+    SSIBus* spi_bus = (SSIBus *)qdev_get_child_bus(spi_master, "spi");
+    DeviceState *flash_dev = ssi_create_slave_no_init(spi_bus, "gd25q32");
+    qdev_prop_set_drive(flash_dev, "drive", blk, &error_fatal);
+    qdev_init_nofail(flash_dev);
+    qdev_connect_gpio_out_named(spi_master, SSI_GPIO_CS, 0,
+                                qdev_get_gpio_in_named(flash_dev, SSI_GPIO_CS, 0));
+}
+
 static void esp32_machine_inst_init(MachineState *machine)
 {
     Esp32SocState *s = g_new0(Esp32SocState, 1);
+
+    DriveInfo *dinfo = drive_get_next(IF_MTD);
+    BlockBackend* blk = NULL;
+    if (dinfo) {
+        qemu_log("Adding SPI flash device\n");
+        blk = blk_by_legacy_dinfo(dinfo);
+    } else {
+        qemu_log("Not initializing SPI Flash\n");
+    }
+
 
     object_initialize_child(OBJECT(machine), "soc", s, sizeof(*s),
                             TYPE_ESP32_SOC, &error_abort, NULL);
     object_property_set_bool(OBJECT(s), true, "realized", &error_abort);
 
+    if (blk) {
+        esp32_machine_init_spi_flash(machine, s, blk);
+    }
 
     /* Need MMU initialized prior to ELF loading,
      * so that ELF gets loaded into virtual addresses
