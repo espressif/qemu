@@ -13,6 +13,8 @@
 #include "qapi/error.h"
 #include "hw/hw.h"
 #include "hw/sysbus.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/boards.h"
 #include "hw/misc/esp32_reg.h"
@@ -20,8 +22,33 @@
 #include "target/xtensa/cpu.h"
 
 
-#define ESP32_DPORT_SIZE   (DR_REG_DPORT_END - DR_REG_DPORT_BASE)
+#define ESP32_DPORT_SIZE        (DR_REG_DPORT_APB_BASE - DR_REG_DPORT_BASE)
 
+#define MMU_RANGE_SIZE          (ESP32_CACHE_PAGES_PER_REGION * sizeof(uint32_t))
+#define MMU_RANGE_LAST          (MMU_RANGE_SIZE - sizeof(uint32_t))
+
+#define PRO_DROM0_MMU_FIRST     (DR_REG_FLASH_MMU_TABLE_PRO - DR_REG_DPORT_BASE)
+#define PRO_DROM0_MMU_LAST      (PRO_DROM0_MMU_FIRST + MMU_RANGE_LAST)
+#define PRO_IRAM0_MMU_FIRST     (DR_REG_FLASH_MMU_TABLE_PRO - DR_REG_DPORT_BASE + MMU_RANGE_SIZE)
+#define PRO_IRAM0_MMU_LAST      (PRO_IRAM0_MMU_FIRST + MMU_RANGE_LAST)
+#define APP_DROM0_MMU_FIRST     (DR_REG_FLASH_MMU_TABLE_APP - DR_REG_DPORT_BASE)
+#define APP_DROM0_MMU_LAST      (APP_DROM0_MMU_FIRST + MMU_RANGE_LAST)
+#define APP_IRAM0_MMU_FIRST     (DR_REG_FLASH_MMU_TABLE_APP - DR_REG_DPORT_BASE + MMU_RANGE_SIZE)
+#define APP_IRAM0_MMU_LAST      (APP_IRAM0_MMU_FIRST + MMU_RANGE_LAST)
+#define MMU_ENTRY_MASK          0x1ff
+
+static void esp32_cache_state_update(Esp32CacheState* cs);
+static void esp32_cache_data_sync(Esp32CacheRegionState* crs);
+
+static inline uint32_t get_mmu_entry(Esp32CacheRegionState* crs, hwaddr base, hwaddr addr)
+{
+    return crs->mmu_table[(addr - base)/sizeof(uint32_t)];
+}
+
+static inline void set_mmu_entry(Esp32CacheRegionState* crs, hwaddr base, hwaddr addr, uint64_t val)
+{
+    crs->mmu_table[(addr - base)/sizeof(uint32_t)] = val & MMU_ENTRY_MASK;
+}
 
 static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -54,6 +81,18 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case A_DPORT_APP_CACHE_CTRL1:
         r = s->cache_state[1].cache_ctrl1_reg;
+        break;
+    case PRO_DROM0_MMU_FIRST ... PRO_DROM0_MMU_LAST:
+        r = get_mmu_entry(&s->cache_state[0].drom0, PRO_DROM0_MMU_FIRST, addr);
+        break;
+    case PRO_IRAM0_MMU_FIRST ... PRO_IRAM0_MMU_LAST:
+        r = get_mmu_entry(&s->cache_state[0].iram0, PRO_IRAM0_MMU_FIRST, addr);
+        break;
+    case APP_DROM0_MMU_FIRST ... APP_DROM0_MMU_LAST:
+        r = get_mmu_entry(&s->cache_state[1].drom0, APP_DROM0_MMU_FIRST, addr);
+        break;
+    case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
+        r = get_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr);
         break;
     }
 
@@ -90,19 +129,43 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
         break;
     case A_DPORT_PRO_CACHE_CTRL:
         if (FIELD_EX32(value, DPORT_PRO_CACHE_CTRL, CACHE_FLUSH_ENA)) {
-            s->cache_state[0].cache_ctrl_reg |= R_DPORT_PRO_CACHE_CTRL_CACHE_FLUSH_DONE_MASK;
+            value |= R_DPORT_PRO_CACHE_CTRL_CACHE_FLUSH_DONE_MASK;
+            value &= ~R_DPORT_PRO_CACHE_CTRL_CACHE_FLUSH_ENA_MASK;
+            esp32_cache_data_sync(&s->cache_state[0].drom0);
+            esp32_cache_data_sync(&s->cache_state[0].iram0);
         }
+        s->cache_state[0].cache_ctrl_reg = value;
+        esp32_cache_state_update(&s->cache_state[0]);
         break;
     case A_DPORT_PRO_CACHE_CTRL1:
         s->cache_state[0].cache_ctrl1_reg = value;
+        esp32_cache_state_update(&s->cache_state[0]);
         break;
     case A_DPORT_APP_CACHE_CTRL:
         if (FIELD_EX32(value, DPORT_APP_CACHE_CTRL, CACHE_FLUSH_ENA)) {
-            s->cache_state[1].cache_ctrl_reg |= R_DPORT_APP_CACHE_CTRL_CACHE_FLUSH_DONE_MASK;
+            value |= R_DPORT_APP_CACHE_CTRL_CACHE_FLUSH_DONE_MASK;
+            value &= ~R_DPORT_APP_CACHE_CTRL_CACHE_FLUSH_ENA_MASK;
+            esp32_cache_data_sync(&s->cache_state[1].drom0);
+            esp32_cache_data_sync(&s->cache_state[1].iram0);
         }
+        s->cache_state[1].cache_ctrl_reg = value;
+        esp32_cache_state_update(&s->cache_state[1]);
         break;
     case A_DPORT_APP_CACHE_CTRL1:
         s->cache_state[1].cache_ctrl1_reg = value;
+        esp32_cache_state_update(&s->cache_state[1]);
+        break;
+    case PRO_DROM0_MMU_FIRST ... PRO_DROM0_MMU_LAST:
+        set_mmu_entry(&s->cache_state[0].drom0, PRO_DROM0_MMU_FIRST, addr, value);
+        break;
+    case PRO_IRAM0_MMU_FIRST ... PRO_IRAM0_MMU_LAST:
+        set_mmu_entry(&s->cache_state[0].iram0, PRO_IRAM0_MMU_FIRST, addr, value);
+        break;
+    case APP_DROM0_MMU_FIRST ... APP_DROM0_MMU_LAST:
+        set_mmu_entry(&s->cache_state[1].drom0, APP_DROM0_MMU_FIRST, addr, value);
+        break;
+    case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
+        set_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr, value);
         break;
     }
 }
@@ -112,6 +175,61 @@ static const MemoryRegionOps esp32_dport_ops = {
     .write = esp32_dport_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
+
+static uint64_t esp32_cache_read(void *opaque, hwaddr addr, unsigned int size)
+{
+    Esp32CacheRegionState* crs = (Esp32CacheRegionState*) opaque;
+    uint32_t result;
+    assert(addr < ESP32_CACHE_REGION_SIZE);
+    memcpy(&result, crs->cache_data + addr, size);
+    return result;
+}
+
+static void esp32_cache_data_sync(Esp32CacheRegionState* crs)
+{
+    uint8_t* cache_data = (uint8_t*) memory_region_get_ram_ptr(&crs->mem);
+    for (int i = 0; i < ESP32_CACHE_PAGES_PER_REGION; ++i) {
+        uint32_t* cache_page = (uint32_t*) (cache_data + i * ESP32_CACHE_PAGE_SIZE);
+        uint32_t mmu_entry = crs->mmu_table[i];
+        if (mmu_entry & ESP32_CACHE_MMU_INVALID_VAL) {
+            uint32_t fill_val = crs->type == ESP32_DCACHE ? 0xbaadbaad : 0x00000000;
+            for (int word = 0; word < ESP32_CACHE_PAGE_SIZE / sizeof(uint32_t); ++word) {
+                cache_page[word] = fill_val;
+            }
+        } else {
+            uint32_t phys_addr = mmu_entry * ESP32_CACHE_PAGE_SIZE;
+            blk_pread(crs->cache->dport->flash_blk, phys_addr, cache_page, ESP32_CACHE_PAGE_SIZE);
+        }
+
+    }
+    memory_region_flush_rom_device(&crs->mem, 0, ESP32_CACHE_REGION_SIZE);
+}
+
+static void esp32_cache_state_update(Esp32CacheState* cs)
+{
+    bool cache_enabled = FIELD_EX32(cs->cache_ctrl_reg, DPORT_PRO_CACHE_CTRL, CACHE_ENA) != 0;
+
+    bool drom0_enabled = cache_enabled &&
+        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0;
+    if (!cs->drom0.mem.enabled && drom0_enabled) {
+        esp32_cache_data_sync(&cs->drom0);
+    }
+    memory_region_set_enabled(&cs->drom0.mem, drom0_enabled);
+
+    bool iram0_enabled = cache_enabled &&
+        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0;
+    if (!cs->iram0.mem.enabled && iram0_enabled) {
+        esp32_cache_data_sync(&cs->iram0);
+    }
+    memory_region_set_enabled(&cs->iram0.mem, iram0_enabled);
+}
+
+static const MemoryRegionOps esp32_cache_ops = {
+    .read =  esp32_cache_read,
+    .write = NULL,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
 
 static void esp32_dport_reset(DeviceState *dev)
 {
@@ -146,6 +264,23 @@ static void esp32_dport_realize(DeviceState *dev, Error **errp)
     }
 }
 
+static void esp32_cache_init_region(Esp32CacheState *cs,
+                                    Esp32CacheRegionState *crs,
+                                    Esp32CacheRegionType type,
+                                    uint32_t enable_mask,
+                                    const char* name, hwaddr base)
+{
+    char desc[16];
+    crs->cache = cs;
+    crs->type = type;
+    crs->base = base;
+    snprintf(desc, sizeof(desc), "cpu%d-%s", cs->core_id, name);
+    memory_region_init_rom_device(&crs->mem, OBJECT(cs->dport),
+                                  &esp32_cache_ops, crs,
+                                  desc, ESP32_CACHE_REGION_SIZE, &error_abort);
+//    crs->cache_data = qemu_memalign(4096, ESP32_CACHE_REGION_SIZE);
+}
+
 static void esp32_dport_init(Object *obj)
 {
     Esp32DportState *s = ESP32_DPORT(obj);
@@ -162,12 +297,24 @@ static void esp32_dport_init(Object *obj)
                             &error_abort, NULL);
     memory_region_add_subregion_overlap(&s->iomem, ESP32_DPORT_CROSSCORE_INT_BASE, &s->crosscore_int.iomem, -1);
 
+
+    for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
+        Esp32CacheState* cs = &s->cache_state[i];
+        cs->core_id = i;
+        cs->dport = s;
+        esp32_cache_init_region(cs, &cs->drom0, ESP32_DCACHE,
+                                R_DPORT_PRO_CACHE_CTRL1_MASK_DROM0_MASK, "drom0", 0x3F400000);
+        esp32_cache_init_region(cs, &cs->iram0, ESP32_ICACHE,
+                                R_DPORT_PRO_CACHE_CTRL1_MASK_IRAM0_MASK, "iram0", 0x40000000);
+    }
+
     qdev_init_gpio_out_named(DEVICE(sbd), &s->appcpu_stall_req, ESP32_DPORT_APPCPU_STALL_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->appcpu_reset_req, ESP32_DPORT_APPCPU_RESET_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->clk_update_req, ESP32_DPORT_CLK_UPDATE_GPIO, 1);
 }
 
 static Property esp32_dport_properties[] = {
+    DEFINE_PROP_DRIVE("flash", Esp32DportState, flash_blk),
     DEFINE_PROP_END_OF_LIST(),
 };
 

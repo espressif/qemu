@@ -29,6 +29,7 @@
 #include "hw/misc/unimp.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/block-backend.h"
+#include "exec/exec-all.h"
 #include "elf.h"
 
 #define TYPE_ESP32_SOC "xtensa.esp32"
@@ -88,6 +89,8 @@ typedef struct Esp32SocState {
     Esp32FrcTimerState frc_timer[ESP32_FRC_COUNT];
     Esp32TimgState timg[ESP32_TIMG_COUNT];
     Esp32SpiState spi[ESP32_SPI_COUNT];
+
+    MemoryRegion cpu_specific_mem[ESP32_CPU_COUNT];
 
     uint32_t requested_reset;
 } Esp32SocState;
@@ -228,17 +231,17 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
                            memmap[ESP32_MEMREGION_RTCSLOW].size, &error_fatal);
     memory_region_add_subregion(sys_mem, memmap[ESP32_MEMREGION_RTCSLOW].base, rtcslow);
 
+    /* RTC Fast memory is only accessible by the PRO CPU */
+
     memory_region_init_ram(rtcfast_i, NULL, "esp32.rtcfast_i",
                            memmap[ESP32_MEMREGION_RTCSLOW].size, &error_fatal);
-    memory_region_add_subregion(sys_mem, memmap[ESP32_MEMREGION_RTCFAST_I].base, rtcfast_i);
+    memory_region_add_subregion(&s->cpu_specific_mem[0], memmap[ESP32_MEMREGION_RTCFAST_I].base, rtcfast_i);
 
     memory_region_init_alias(rtcfast_d, NULL, "esp32.rtcfast_d", rtcfast_i, 0, memmap[ESP32_MEMREGION_RTCFAST_D].size);
-    memory_region_add_subregion(sys_mem, memmap[ESP32_MEMREGION_RTCFAST_D].base, rtcfast_d);
+    memory_region_add_subregion(&s->cpu_specific_mem[0], memmap[ESP32_MEMREGION_RTCFAST_D].base, rtcfast_d);
 
     for (int i = 0; i < ms->smp.cpus; ++i) {
-        const uint32_t cpuid[ESP32_CPU_COUNT] = { 0xcdcd, 0xabab };
         object_property_set_bool(OBJECT(&s->cpu[i]), true, "realized", &error_abort);
-        s->cpu[i].env.sregs[PRID] = cpuid[i];
     }
 
     for (int i = 0; i < ESP32_UART_COUNT; ++i) {
@@ -264,6 +267,15 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, 1));
     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32_DPORT_CLK_UPDATE_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32_RTC_CLK_UPDATE_GPIO, 0));
+
+    if (s->dport.flash_blk) {
+        for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
+            Esp32CacheRegionState *drom0 = &s->dport.cache_state[i].drom0;
+            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], drom0->base, &drom0->mem, -1);
+            Esp32CacheRegionState *iram0 = &s->dport.cache_state[i].iram0;
+            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], iram0->base, &iram0->mem, -1);
+        }
+    }
 
     object_property_set_bool(OBJECT(&s->rtc_cntl), true, "realized", &error_abort);
 
@@ -335,10 +347,27 @@ static void esp32_soc_init(Object *obj)
     MachineState *ms = MACHINE(qdev_get_machine());
     char name[16];
 
+    MemoryRegion *system_memory = get_system_memory();
 
     for (int i = 0; i < ms->smp.cpus; ++i) {
         snprintf(name, sizeof(name), "cpu%d", i);
         object_initialize_child(obj, name, &s->cpu[i], sizeof(s->cpu[i]), TYPE_ESP32_CPU, &error_abort, NULL);
+
+        const uint32_t cpuid[ESP32_CPU_COUNT] = { 0xcdcd, 0xabab };
+        s->cpu[i].env.sregs[PRID] = cpuid[i];
+
+        snprintf(name, sizeof(name), "cpu%d-mem", i);
+        memory_region_init(&s->cpu_specific_mem[i], NULL, name, UINT32_MAX);
+
+        CPUState* cs = CPU(&s->cpu[i]);
+        cs->num_ases = 1;
+        cpu_address_space_init(cs, 0, "cpu-memory", &s->cpu_specific_mem[i]);
+
+        MemoryRegion *cpu_view_sysmem = g_new(MemoryRegion, 1);
+        snprintf(name, sizeof(name), "cpu%d-sysmem", i);
+        memory_region_init_alias(cpu_view_sysmem, NULL, name, system_memory, 0, UINT32_MAX);
+        memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], 0, cpu_view_sysmem, 0);
+        cs->memory = &s->cpu_specific_mem[i];
     }
 
     for (int i = 0; i < ESP32_UART_COUNT; ++i) {
@@ -447,6 +476,11 @@ static void esp32_machine_inst_init(MachineState *machine)
 
     object_initialize_child(OBJECT(machine), "soc", s, sizeof(*s),
                             TYPE_ESP32_SOC, &error_abort, NULL);
+
+    if (blk) {
+        s->dport.flash_blk = blk;
+    }
+
     object_property_set_bool(OBJECT(s), true, "realized", &error_abort);
 
     if (blk) {
