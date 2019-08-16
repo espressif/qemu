@@ -81,4 +81,4 @@ obj-$(CONFIG_NRF51_SOC) += nrf51_rng.o
 
 obj-$(CONFIG_GRLIB) += grlib_ahb_apb_pnp.o
 
-obj-$(call land,$(CONFIG_ESPRESSIF),$(CONFIG_XTENSA_ESP32)) += esp32_gpio.o esp32_dport.o esp32_intmatrix.o esp32_rtc_cntl.o esp32_crosscore_int.o esp32_rng.o
+obj-$(call land,$(CONFIG_ESPRESSIF),$(CONFIG_XTENSA_ESP32)) += esp32_gpio.o esp32_dport.o esp32_intmatrix.o esp32_rtc_cntl.o esp32_crosscore_int.o esp32_rng.o esp32_sha.o

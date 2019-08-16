@@ -23,6 +23,7 @@
 #include "hw/misc/esp32_dport.h"
 #include "hw/misc/esp32_rtc_cntl.h"
 #include "hw/misc/esp32_rng.h"
+#include "hw/misc/esp32_sha.h"
 #include "hw/timer/esp32_frc_timer.h"
 #include "hw/timer/esp32_timg.h"
 #include "hw/ssi/esp32_spi.h"
@@ -91,6 +92,7 @@ typedef struct Esp32SocState {
     Esp32FrcTimerState frc_timer[ESP32_FRC_COUNT];
     Esp32TimgState timg[ESP32_TIMG_COUNT];
     Esp32SpiState spi[ESP32_SPI_COUNT];
+    Esp32ShaState sha;
 
     MemoryRegion cpu_specific_mem[ESP32_CPU_COUNT];
 
@@ -128,6 +130,7 @@ static void esp32_soc_reset(DeviceState *dev)
     }
     if (s->requested_reset & ESP32_SOC_RESET_PERIPH) {
         device_reset(DEVICE(&s->dport));
+        device_reset(DEVICE(&s->sha));
         device_reset(DEVICE(&s->gpio));
         for (int i = 0; i < ESP32_UART_COUNT; ++i) {
             device_reset(DEVICE(&s->uart));
@@ -286,6 +289,9 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
         }
     }
 
+    object_property_set_bool(OBJECT(&s->sha), true, "realized", &error_abort);
+    esp32_soc_add_periph_device(sys_mem, &s->sha, DR_REG_SHA_BASE);
+
     object_property_set_bool(OBJECT(&s->rtc_cntl), true, "realized", &error_abort);
     esp32_soc_add_periph_device(sys_mem, &s->rtc_cntl, DR_REG_RTCCNTL_BASE);
 
@@ -426,6 +432,9 @@ static void esp32_soc_init(Object *obj)
 
     object_initialize_child(obj, "rng", &s->rng, sizeof(s->rng),
                             TYPE_ESP32_RNG, &error_abort, NULL);
+
+    object_initialize_child(obj, "sha", &s->sha, sizeof(s->sha),
+                                TYPE_ESP32_SHA, &error_abort, NULL);
 
 
     qdev_init_gpio_in_named(DEVICE(s), esp32_dig_reset, ESP32_RTC_DIG_RESET_GPIO, 1);
