@@ -82,6 +82,11 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
     case A_DPORT_APP_CACHE_CTRL1:
         r = s->cache_state[1].cache_ctrl1_reg;
         break;
+    case A_DPORT_PRO_DCACHE_DBUG0:
+    case A_DPORT_APP_DCACHE_DBUG0:
+        /* in idle state */
+        r = FIELD_DP32(0, DPORT_PRO_DCACHE_DBUG0, CACHE_STATE, 1);
+        break;
     case PRO_DROM0_MMU_FIRST ... PRO_DROM0_MMU_LAST:
         r = get_mmu_entry(&s->cache_state[0].drom0, PRO_DROM0_MMU_FIRST, addr);
         break;

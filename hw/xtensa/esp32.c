@@ -118,6 +118,16 @@ static void esp32_cpu_reset(void* opaque, int n, int level)
     }
 }
 
+static void remove_cpu_watchpoints(XtensaCPU* xcs)
+{
+    for (int i = 0; i < MAX_NDBREAK; ++i) {
+        if (xcs->env.cpu_watchpoint[i]) {
+            cpu_watchpoint_remove_by_ref(CPU(xcs), xcs->env.cpu_watchpoint[i]);
+            xcs->env.cpu_watchpoint[i] = NULL;
+        }
+    }
+}
+
 static void esp32_soc_reset(DeviceState *dev)
 {
     Esp32SocState *s = ESP32_SOC(dev);
@@ -147,10 +157,12 @@ static void esp32_soc_reset(DeviceState *dev)
     }
     if (s->requested_reset & ESP32_SOC_RESET_PROCPU) {
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
+        remove_cpu_watchpoints(&s->cpu[0]);
         cpu_reset(CPU(&s->cpu[0]));
     }
     if (s->requested_reset & ESP32_SOC_RESET_APPCPU) {
         xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
+        remove_cpu_watchpoints(&s->cpu[0]);
         cpu_reset(CPU(&s->cpu[1]));
     }
     s->requested_reset = 0;
