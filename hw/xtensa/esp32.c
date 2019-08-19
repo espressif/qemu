@@ -29,6 +29,11 @@
 #include "hw/ssi/esp32_spi.h"
 #include "hw/xtensa/xtensa_memory.h"
 #include "hw/misc/unimp.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
+#include "sysemu/sysemu.h"
+#include "sysemu/reset.h"
+#include "sysemu/runstate.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/block-backend.h"
 #include "exec/exec-all.h"
@@ -200,7 +205,7 @@ static void esp32_clk_update(void* opaque, int n, int level)
         cpu_clk_freq = apb_clk_freq;
     }
     qdev_prop_set_int32(DEVICE(&s->frc_timer), "apb_freq", apb_clk_freq);
-    *(uint32_t*)(&s->cpu[0].env.config->clock_freq_khz) = cpu_clk_freq;
+    *(uint32_t*)(&s->cpu[0].env.config->clock_freq_khz) = cpu_clk_freq / 1000;
 }
 
 static void esp32_soc_add_periph_device(MemoryRegion *dest, void* dev, hwaddr dport_base_addr)
