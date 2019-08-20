@@ -1,5 +1,6 @@
 #pragma once
 
+#include "qemu/fifo8.h"
 #include "hw/sysbus.h"
 #include "chardev/char-fe.h"
 #include "hw/hw.h"
@@ -41,27 +42,31 @@ REG32(UART_CLKDIV, 0x14)
     FIELD(UART_CLKDIV, CLKDIV, 0, 20)
     FIELD(UART_CLKDIV, CLKDIV_FRAG, 20, 4)
 
+REG32(UART_AUTOBAUD, 0x18)
+    FIELD(UART_AUTOBAUD, EN, 0, 1)
+
 REG32(UART_STATUS, 0x1C)
     FIELD(UART_STATUS, RXFIFO_CNT, 0, 8)
     FIELD(UART_STATUS, ST_URX_OUT, 8, 4)
     FIELD(UART_STATUS, TXFIFO_CNT, 16, 8)
     FIELD(UART_STATUS, ST_UTX_OUT, 24, 4)
 
+REG32(UART_LOWPULSE, 0x28)
+REG32(UART_HIGHPULSE, 0x2c)
+REG32(UART_RXD_CNT, 0x30)
+
 /* TODO: implement */
 REG32(UART_CONF0, 0x20)
 REG32(UART_CONF1, 0x24)
+    FIELD(UART_CONF1, TOUT_EN, 31, 1)
+    FIELD(UART_CONF1, TOUT_THRD, 24, 7)
+    FIELD(UART_CONF1, TXFIFO_EMPTY_THRD, 8, 7)
+    FIELD(UART_CONF1, RXFIFO_FULL_THRD, 0, 7)
+
 REG32(UART_DATE, 0x78)
 
 /* Size of the register file */
 #define UART_REG_CNT (R_UART_DATE + 1)
-
-
-/* TODO: replace with "qemu/fifo8.h" */
-typedef struct {
-    uint8_t     data[UART_FIFO_LENGTH];
-    uint32_t    w_index;
-    uint32_t    r_index;
-} ESP32UARTFIFO;
 
 
 typedef struct ESPUARTState {
@@ -71,9 +76,11 @@ typedef struct ESPUARTState {
     CharBackend chr;
     qemu_irq irq;
 
-    ESP32UARTFIFO rx_fifo;
-    ESP32UARTFIFO tx_fifo;
+    Fifo8 rx_fifo;
+    Fifo8 tx_fifo;
+    guint tx_watch_handle;
 
     uint32_t reg[UART_REG_CNT];
+    bool autobaud_en;
 } ESP32UARTState;
 

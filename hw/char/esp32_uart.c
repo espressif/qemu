@@ -24,47 +24,34 @@
 #include "hw/char/esp32_uart.h"
 #include "trace.h"
 
-static void fifo_put(ESP32UARTFIFO *q, uint8_t ch)
-{
-    q->data[q->w_index] = ch;
-    q->w_index = (q->w_index + 1) % UART_FIFO_LENGTH;
-}
-
-static uint8_t fifo_get(ESP32UARTFIFO *q)
-{
-    uint8_t ret = q->data[q->r_index];
-    q->r_index = (q->r_index + 1) % UART_FIFO_LENGTH;
-    return  ret;
-}
-
-static int fifo_count(const ESP32UARTFIFO *q)
-{
-    if (q->w_index < q->r_index) {
-        return UART_FIFO_LENGTH - q->r_index + q->w_index;
-    }
-
-    return q->w_index - q->r_index;
-}
-
-static int fifo_avail(const ESP32UARTFIFO *q)
-{
-    return UART_FIFO_LENGTH - fifo_count(q);
-}
-
-static void fifo_reset(ESP32UARTFIFO *q)
-{
-    q->w_index = 0;
-    q->r_index = 0;
-}
-
 
 static gboolean uart_transmit(GIOChannel *chan, GIOCondition cond, void *opaque);
 static void uart_receive(void *opaque, const uint8_t *buf, int size);
 
+static uint8_t fifo8_peek(Fifo8 *fifo)
+{
+    if (fifo->num == 0) {
+        abort();
+    }
+    return fifo->data[fifo->head];
+}
 
 static void esp_uart_update_irq(ESP32UARTState *s)
 {
     bool irq = false;
+
+    uint32_t tx_empty_threshold = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, TXFIFO_EMPTY_THRD);
+    uint32_t rx_full_threshold = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, RXFIFO_FULL_THRD);
+
+    uint32_t tx_empty_raw = (fifo8_num_free(&s->tx_fifo) <= tx_empty_threshold);
+    uint32_t rx_full_raw = (fifo8_num_used(&s->rx_fifo) >= rx_full_threshold);
+    uint32_t tx_done_raw = (fifo8_num_used(&s->tx_fifo) == 0);
+
+    uint32_t int_raw = s->reg[R_UART_INT_RAW];
+    int_raw = FIELD_DP32(int_raw, UART_INT_RAW, RXFIFO_FULL, rx_full_raw);
+    int_raw = FIELD_DP32(int_raw, UART_INT_RAW, TXFIFO_EMPTY, tx_empty_raw);
+    int_raw = FIELD_DP32(int_raw, UART_INT_RAW, TX_DONE, tx_done_raw);
+    s->reg[R_UART_INT_RAW] = int_raw;
 
     uint32_t int_st = s->reg[R_UART_INT_RAW] & s->reg[R_UART_INT_ENA];
     irq = int_st != 0;
@@ -80,19 +67,28 @@ static uint64_t uart_read(void *opaque, hwaddr addr, unsigned int size)
 
     switch (addr) {
     case A_UART_FIFO:
-        if (fifo_count(&s->rx_fifo) == 0) {
+        if (fifo8_num_used(&s->rx_fifo) == 0) {
             r = 0xEE;
             error_report("esp_uart: read UART FIFO while it is empty");
         } else {
-            r = fifo_get(&s->rx_fifo);
-            /* TODO: update IRQ status */
+            r = fifo8_pop(&s->rx_fifo);
+            esp_uart_update_irq(s);
             qemu_chr_fe_accept_input(&s->chr);
         }
         break;
 
     case A_UART_STATUS:
-        r = FIELD_DP32(r, UART_STATUS, RXFIFO_CNT, fifo_count(&s->rx_fifo));
-        r = FIELD_DP32(r, UART_STATUS, TXFIFO_CNT, fifo_count(&s->tx_fifo));
+        r = FIELD_DP32(r, UART_STATUS, RXFIFO_CNT, fifo8_num_used(&s->rx_fifo));
+        r = FIELD_DP32(r, UART_STATUS, TXFIFO_CNT, fifo8_num_used(&s->tx_fifo));
+        break;
+
+    case A_UART_LOWPULSE:
+    case A_UART_HIGHPULSE:
+        r = 337;  /* FIXME: this should depend on the APB frequency */
+        break;
+
+    case A_UART_DATE:
+        r = 0x15122500;
         break;
 
     default:
@@ -111,10 +107,10 @@ static void uart_write(void *opaque, hwaddr addr,
 
     switch (addr) {
     case A_UART_FIFO:
-        if (fifo_avail(&s->tx_fifo) == 0) {
-            error_report("esp_uart: read UART FIFO while it is full");
+        if (fifo8_num_free(&s->tx_fifo) == 0) {
+            error_report("esp_uart: write to UART FIFO while it is full");
         } else {
-            fifo_put(&s->tx_fifo, (uint8_t) (value & 0xff));
+            fifo8_push(&s->tx_fifo, (uint8_t) (value & 0xff));
             uart_transmit(NULL, G_IO_OUT, s);
         }
         break;
@@ -128,6 +124,14 @@ static void uart_write(void *opaque, hwaddr addr,
         s->reg[addr / 4] = value;
         break;
 
+    case A_UART_AUTOBAUD:
+        s->autobaud_en = FIELD_EX32(value, UART_AUTOBAUD, EN);
+        if (!s->autobaud_en) {
+            s->reg[R_UART_RXD_CNT] = 0;
+        }
+        s->reg[addr / 4] = value;
+        break;
+
     case A_UART_INT_RAW:
     case A_UART_INT_ST:
     case A_UART_STATUS:
@@ -136,14 +140,14 @@ static void uart_write(void *opaque, hwaddr addr,
 
     default:
         if (addr > sizeof(s->reg)) {
-            error_report("esp_uart: write to addr=0x%x out of bounds\n", addr);
+            error_report("esp_uart: write to addr=0x%x out of bounds\n", (uint32_t) addr);
         } else {
             s->reg[addr / 4] = value;
         }
         break;
 
     }
-    /* TODO: update IRQ status */
+    esp_uart_update_irq(s);
 }
 
 
@@ -151,14 +155,21 @@ static gboolean uart_transmit(GIOChannel *chan, GIOCondition cond, void *opaque)
 {
     ESP32UARTState *s = ESP32_UART(opaque);
 
-    /* Simple version using qemu_chr_fe_write_all.
-     * FIXME: implement using async IO callbacks */
-    uint8_t data[UART_FIFO_LENGTH];
-    int count = fifo_count(&s->tx_fifo);
-    for (int i = 0; i < count; ++i) {
-        data[i] = fifo_get(&s->tx_fifo);
+    s->tx_watch_handle = 0;
+
+    while (fifo8_num_used(&s->tx_fifo) > 0) {
+        uint8_t b = fifo8_peek(&s->tx_fifo);
+        int r = qemu_chr_fe_write(&s->chr, &b, 1);
+        if (r == 1) {
+            fifo8_pop(&s->tx_fifo);
+        } else {
+            s->tx_watch_handle = qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
+                                                       uart_transmit, s);
+            break;
+        }
     }
-    qemu_chr_fe_write_all(&s->chr, data, count);
+
+    esp_uart_update_irq(s);
 
     return FALSE;
 }
@@ -171,27 +182,30 @@ static void uart_receive(void *opaque, const uint8_t *buf, int size)
         return;
     }
 
-    if (fifo_avail(&s->rx_fifo) == 0) {
+    if (fifo8_num_free(&s->rx_fifo) == 0) {
         return;
     }
 
-    for (int i = 0; i < size && fifo_avail(&s->rx_fifo) > 0; i++) {
-        fifo_put(&s->rx_fifo, buf[i]);
+    for (int i = 0; i < size && fifo8_num_free(&s->rx_fifo) > 0; i++) {
+        fifo8_push(&s->rx_fifo, buf[i]);
+
+        if (s->autobaud_en) {
+            s->reg[R_UART_RXD_CNT] += __builtin_popcount(buf[i]) + 1;
+        }
     }
 
-    /* TODO: update IRQs */
+    esp_uart_update_irq(s);
 }
 
 static int uart_can_receive(void *opaque)
 {
     ESP32UARTState *s = ESP32_UART(opaque);
 
-    return fifo_avail(&s->rx_fifo);
+    return fifo8_num_free(&s->rx_fifo) - 1;
 }
 
 static void uart_event(void *opaque, int event)
 {
-    ESP32UARTState *s = ESP32_UART(opaque);
     /* TODO: handle UART break */
 }
 
@@ -200,8 +214,13 @@ static void esp32_uart_reset(DeviceState *dev)
     ESP32UARTState *s = ESP32_UART(dev);
 
     memset(s->reg, 0, sizeof(s->reg));
-    fifo_reset(&s->tx_fifo);
-    fifo_reset(&s->rx_fifo);
+    s->autobaud_en = false;
+    fifo8_reset(&s->tx_fifo);
+    fifo8_reset(&s->rx_fifo);
+    if (s->tx_watch_handle) {
+        g_source_remove(s->tx_watch_handle);
+        s->tx_watch_handle = 0;
+    }
 }
 
 
@@ -229,14 +248,10 @@ static void esp32_uart_init(Object *obj)
                           TYPE_ESP32_UART, UART_REG_CNT * sizeof(uint32_t));
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    fifo8_create(&s->tx_fifo, UART_FIFO_LENGTH);
+    fifo8_create(&s->rx_fifo, UART_FIFO_LENGTH);
 }
 
-static int esp32_uart_post_load(void *opaque, int version_id)
-{
-    ESP32UARTState *s = ESP32_UART(opaque);
-    /* update state after async load */
-    return 0;
-}
 
 static Property esp32_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", ESP32UARTState, chr),
