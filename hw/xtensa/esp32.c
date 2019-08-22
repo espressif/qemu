@@ -27,6 +27,7 @@
 #include "hw/timer/esp32_frc_timer.h"
 #include "hw/timer/esp32_timg.h"
 #include "hw/ssi/esp32_spi.h"
+#include "hw/nvram/esp32_efuse.h"
 #include "hw/xtensa/xtensa_memory.h"
 #include "hw/misc/unimp.h"
 #include "hw/irq.h"
@@ -98,6 +99,7 @@ typedef struct Esp32SocState {
     Esp32TimgState timg[ESP32_TIMG_COUNT];
     Esp32SpiState spi[ESP32_SPI_COUNT];
     Esp32ShaState sha;
+    Esp32EfuseState efuse;
 
     MemoryRegion cpu_specific_mem[ESP32_CPU_COUNT];
 
@@ -159,6 +161,7 @@ static void esp32_soc_reset(DeviceState *dev)
         for (int i = 0; i < ESP32_SPI_COUNT; ++i) {
             device_reset(DEVICE(&s->spi[i]));
         }
+        device_reset(DEVICE(&s->efuse));
     }
     if (s->requested_reset & ESP32_SOC_RESET_PROCPU) {
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
@@ -365,10 +368,15 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     object_property_set_bool(OBJECT(&s->rng), true, "realized", &error_abort);
     esp32_soc_add_periph_device(sys_mem, &s->rng, ESP32_RNG_BASE);
 
+    object_property_set_bool(OBJECT(&s->efuse), true, "realized", &error_abort);
+    esp32_soc_add_periph_device(sys_mem, &s->efuse, DR_REG_EFUSE_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->efuse), 0,
+                       qdev_get_gpio_in(intmatrix_dev, ETS_EFUSE_INTR_SOURCE));
+
+
     esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_SENS_BASE, 0x400);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.efuse", DR_REG_EFUSE_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
@@ -452,6 +460,9 @@ static void esp32_soc_init(Object *obj)
 
     object_initialize_child(obj, "sha", &s->sha, sizeof(s->sha),
                                 TYPE_ESP32_SHA, &error_abort, NULL);
+
+    object_initialize_child(obj, "efuse", &s->efuse, sizeof(s->efuse),
+                                    TYPE_ESP32_EFUSE, &error_abort, NULL);
 
 
     qdev_init_gpio_in_named(DEVICE(s), esp32_dig_reset, ESP32_RTC_DIG_RESET_GPIO, 1);
