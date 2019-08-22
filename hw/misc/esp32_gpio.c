@@ -27,7 +27,7 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
     uint64_t r = 0;
     switch (addr) {
     case A_GPIO_STRAP:
-        r = 0x12;
+        r = s->strap_mode;
         break;
 
     default:
@@ -70,6 +70,7 @@ static void esp32_gpio_init(Object *obj)
 }
 
 static Property esp32_gpio_properties[] = {
+    DEFINE_PROP_UINT32("strap_mode", Esp32GpioState, strap_mode, ESP32_STRAP_MODE_FLASH_BOOT),
     DEFINE_PROP_END_OF_LIST(),
 };
 
