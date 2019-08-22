@@ -182,10 +182,6 @@ static void uart_receive(void *opaque, const uint8_t *buf, int size)
         return;
     }
 
-    if (fifo8_num_free(&s->rx_fifo) == 0) {
-        return;
-    }
-
     for (int i = 0; i < size && fifo8_num_free(&s->rx_fifo) > 0; i++) {
         fifo8_push(&s->rx_fifo, buf[i]);
 
@@ -194,19 +190,39 @@ static void uart_receive(void *opaque, const uint8_t *buf, int size)
         }
     }
 
+    if (fifo8_is_full(&s->rx_fifo)) {
+        s->throttle_rx = true;
+        const int bits_per_symbol = 10;
+        const int baud_rate = 115200; /* FIXME: get from the divider register */
+        uint64_t throttle_time_ns = (uint64_t) UART_FIFO_LENGTH * bits_per_symbol * NANOSECONDS_PER_SECOND / baud_rate;
+        timer_mod_ns(&s->throttle_timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                     throttle_time_ns);
+    }
+
     esp_uart_update_irq(s);
 }
 
 static int uart_can_receive(void *opaque)
 {
     ESP32UARTState *s = ESP32_UART(opaque);
-
-    return fifo8_num_free(&s->rx_fifo) - 1;
+    if (s->throttle_rx) {
+        return 0;
+    }
+    return fifo8_num_free(&s->rx_fifo);
 }
 
 static void uart_event(void *opaque, int event)
 {
     /* TODO: handle UART break */
+}
+
+
+static void uart_throttle_timer_cb(void* opaque)
+{
+    ESP32UARTState *s = ESP32_UART(opaque);
+    s->throttle_rx = false;
+    qemu_chr_fe_accept_input(&s->chr);
 }
 
 static void esp32_uart_reset(DeviceState *dev)
@@ -215,12 +231,20 @@ static void esp32_uart_reset(DeviceState *dev)
 
     memset(s->reg, 0, sizeof(s->reg));
     s->autobaud_en = false;
+    s->reg[R_UART_RXD_CNT] = 0;
+    s->reg[R_UART_INT_ST] = 0;
+    s->reg[R_UART_INT_RAW] = 0;
+    s->reg[R_UART_INT_ENA] = 0;
+    s->reg[R_UART_AUTOBAUD] = 0;
     fifo8_reset(&s->tx_fifo);
     fifo8_reset(&s->rx_fifo);
     if (s->tx_watch_handle) {
         g_source_remove(s->tx_watch_handle);
         s->tx_watch_handle = 0;
     }
+    timer_del(&s->throttle_timer);
+    s->throttle_rx = false;
+    qemu_irq_lower(s->irq);
 }
 
 
@@ -250,6 +274,7 @@ static void esp32_uart_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
     fifo8_create(&s->tx_fifo, UART_FIFO_LENGTH);
     fifo8_create(&s->rx_fifo, UART_FIFO_LENGTH);
+    timer_init_ns(&s->throttle_timer, QEMU_CLOCK_VIRTUAL, uart_throttle_timer_cb, s);
 }
 
 

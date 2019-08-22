@@ -75,6 +75,8 @@ typedef struct ESPUARTState {
     MemoryRegion iomem;
     CharBackend chr;
     qemu_irq irq;
+    QEMUTimer throttle_timer;
+    bool throttle_rx;
 
     Fifo8 rx_fifo;
     Fifo8 tx_fifo;
