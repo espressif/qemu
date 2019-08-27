@@ -34,19 +34,31 @@ static uint64_t esp32_efuse_read(void *opaque, hwaddr addr, unsigned int size)
     switch (addr) {
     case A_EFUSE_BLK0_RDATA0 ... A_EFUSE_BLK0_WDATA0 - 4:
         idx = (addr - A_EFUSE_BLK0_RDATA0) / 4;
-        r = s->efuse_wr.blk0[idx] & ~(s->efuse_rd_dis.blk0[idx]);
+        r = s->efuse_rd.blk0[idx] & ~(s->efuse_rd_dis.blk0[idx]);
+        break;
+    case A_EFUSE_BLK0_WDATA0 ... A_EFUSE_BLK1_RDATA0 - 4:
+        r = s->efuse_wr.blk0[(addr - A_EFUSE_BLK0_WDATA0) / 4];
         break;
     case A_EFUSE_BLK1_RDATA0 ... A_EFUSE_BLK2_RDATA0 - 4:
         idx = (addr - A_EFUSE_BLK1_RDATA0) / 4;
-        r = s->efuse_wr.blk1[idx] & ~(s->efuse_rd_dis.blk1[idx]);
+        r = s->efuse_rd.blk1[idx] & ~(s->efuse_rd_dis.blk1[idx]);
         break;
     case A_EFUSE_BLK2_RDATA0 ... A_EFUSE_BLK3_RDATA0 - 4:
         idx = (addr - A_EFUSE_BLK2_RDATA0) / 4;
-        r = s->efuse_wr.blk2[idx] & ~(s->efuse_rd_dis.blk2[idx]);
+        r = s->efuse_rd.blk2[idx] & ~(s->efuse_rd_dis.blk2[idx]);
         break;
-    case A_EFUSE_BLK3_RDATA0 ... A_EFUSE_CLK - 4:
+    case A_EFUSE_BLK3_RDATA0 ... A_EFUSE_BLK1_WDATA0 - 4:
         idx = (addr - A_EFUSE_BLK3_RDATA0) / 4;
-        r = s->efuse_wr.blk3[idx] & ~(s->efuse_rd_dis.blk3[idx]);
+        r = s->efuse_rd.blk3[idx] & ~(s->efuse_rd_dis.blk3[idx]);
+        break;
+    case A_EFUSE_BLK1_WDATA0 ... A_EFUSE_BLK2_WDATA0 - 4:
+        r = s->efuse_wr.blk1[(addr - A_EFUSE_BLK1_WDATA0) / 4];
+        break;
+    case A_EFUSE_BLK2_WDATA0 ... A_EFUSE_BLK3_WDATA0 - 4:
+        r = s->efuse_wr.blk2[(addr - A_EFUSE_BLK2_WDATA0) / 4];
+        break;
+    case A_EFUSE_BLK3_WDATA0 ... A_EFUSE_CLK - 4:
+        r = s->efuse_wr.blk3[(addr - A_EFUSE_BLK3_WDATA0) / 4];
         break;
     case A_EFUSE_CLK:
         r = s->clk_reg;
@@ -118,27 +130,84 @@ static void esp32_efuse_write(void *opaque, hwaddr addr,
         s->efuse_wr.blk1[(addr - A_EFUSE_BLK1_WDATA0) / 4] = value;
         break;
     case A_EFUSE_BLK2_WDATA0 ... A_EFUSE_BLK3_WDATA0 - 4:
-        s->efuse_wr.blk1[(addr - A_EFUSE_BLK2_WDATA0) / 4] = value;
+        s->efuse_wr.blk2[(addr - A_EFUSE_BLK2_WDATA0) / 4] = value;
         break;
     case A_EFUSE_BLK3_WDATA0 ... A_EFUSE_CLK - 4:
-        s->efuse_wr.blk1[(addr - A_EFUSE_BLK3_WDATA0) / 4] = value;
+        s->efuse_wr.blk3[(addr - A_EFUSE_BLK3_WDATA0) / 4] = value;
         break;
     }
 }
 
+#define APPLY_DIS(rdwr_, ctrl_field_, dest_field_) \
+    if (s->efuse_ ## rdwr_ .blk0_d0.ctrl_field_) { \
+        memset(&s->efuse_ ## rdwr_ ## _dis.dest_field_, 0xff, sizeof(s->efuse_ ## rdwr_ ## _dis.dest_field_)); \
+    }
+
+#define APPLY_DIS_FIELD(rdwr_, ctrl_field_, dest_field_) \
+    if (s->efuse_ ## rdwr_ .blk0_d0.ctrl_field_) { \
+        s->efuse_ ## rdwr_ ## _dis.dest_field_ = 0; \
+        s->efuse_ ## rdwr_ ## _dis.dest_field_ -= 1; \
+    }
+
+
 static void esp32_efuse_read_op(Esp32EfuseState *s)
 {
     s->cmd_reg = EFUSE_READ;
-    /* TODO: read from storage */
-    /* TODO: set s->efuse_wr_dis and s->efuse_rd_dis from s->efuse_rd */
+    if (s->blk != NULL) {
+        uint64_t perm = BLK_PERM_CONSISTENT_READ |
+                                (blk_is_read_only(s->blk) ? 0 : BLK_PERM_WRITE);
+        int ret = blk_set_perm(s->blk, perm, BLK_PERM_ALL, NULL);
+        if (ret != 0) {
+            fprintf(stderr, "%s: failed to set permission (%d)\n", __func__, ret);
+        }
+        ret = blk_pread(s->blk, 0, &s->efuse_rd, sizeof(s->efuse_rd));
+        if (ret != sizeof(s->efuse_rd)) {
+            fprintf(stderr, "%s: failed to read the block device (%d)\n", __func__, ret);
+        }
+    }
+
+    memset(&s->efuse_rd_dis, 0, sizeof(s->efuse_rd_dis));
+    memset(&s->efuse_wr_dis, 0, sizeof(s->efuse_wr_dis));
+
+    APPLY_DIS(rd, rd_dis_blk1, blk1);
+    APPLY_DIS(rd, rd_dis_blk2, blk2);
+    APPLY_DIS(rd, rd_dis_blk3, blk3);
+    APPLY_DIS_FIELD(rd, rd_dis_blk0_partial, blk0_d5.flash_crypt_config);
+    APPLY_DIS_FIELD(rd, rd_dis_blk0_partial, blk0_d6.coding_scheme);
+    APPLY_DIS_FIELD(rd, rd_dis_blk0_partial, blk0_d6.key_status);
+
+    APPLY_DIS(wr, wr_dis_blk1, blk1);
+    APPLY_DIS(wr, wr_dis_blk2, blk2);
+    APPLY_DIS(wr, wr_dis_blk3, blk3);
+
+    /* Other wr_dis bits are not emulated, but can be handled here if necessary */
+
     esp32_efuse_op_timer_start(s);
 }
 
 static void esp32_efuse_program_op(Esp32EfuseState *s)
 {
     s->cmd_reg = EFUSE_PGM;
-    /* TODO: apply write protection */
-    /* TODO: write to storage */
+
+    Esp32EfuseRegs result;
+    uint32_t* dst = (uint32_t*) &result;
+    uint32_t* rd = (uint32_t*) &s->efuse_rd;
+    uint32_t* wr = (uint32_t*) &s->efuse_wr;
+    uint32_t* wr_dis = (uint32_t*) &s->efuse_wr_dis;
+    for (int i = 0; i < sizeof(result) / sizeof(uint32_t); ++i) {
+        uint32_t wr_word = wr[i];
+        uint32_t wr_dis_word = wr_dis[i];
+        uint32_t rd_word = rd[i];
+        dst[i] = (wr_word & (~wr_dis_word)) | (rd_word & wr_dis_word);
+    }
+
+    if (s->blk != NULL) {
+        int ret = blk_pwrite(s->blk, 0, &result, sizeof(result), 0);
+        if (ret != sizeof(result)) {
+            fprintf(stderr, "%s: failed to write to block device (%d)\n", __func__, ret);
+        }
+    }
+
     esp32_efuse_op_timer_start(s);
 }
 
@@ -193,10 +262,13 @@ static void esp32_efuse_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 
     timer_init_ns(&s->op_timer, QEMU_CLOCK_VIRTUAL, esp32_efuse_timer_cb, s);
+
+    memset(&s->efuse_rd, 0, sizeof(s->efuse_rd));
+    memset(&s->efuse_wr, 0, sizeof(s->efuse_wr));
 }
 
 static Property esp32_efuse_properties[] = {
-//    DEFINE_PROP_DRIVE("storage", Esp32EfuseState, blk),
+    DEFINE_PROP_DRIVE("drive", Esp32EfuseState, blk),
     DEFINE_PROP_END_OF_LIST(),
 };
 
