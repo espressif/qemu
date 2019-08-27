@@ -21,6 +21,7 @@ typedef struct Esp32SpiState {
 
     uint32_t addr_reg;
     uint32_t ctrl_reg;
+    uint32_t status_reg;
     uint32_t ctrl1_reg;
     uint32_t ctrl2_reg;
     uint32_t user_reg;
@@ -53,6 +54,9 @@ REG32(SPI_CMD, 0x00)
 
 REG32(SPI_ADDR, 0x04)
 REG32(SPI_CTRL, 0x08)
+REG32(SPI_STATUS, 0x10)
+    FIELD(SPI_STATUS, STATUS, 0, 16)
+
 REG32(SPI_CTRL1, 0x0c)
 REG32(SPI_CTRL2, 0x14)
 REG32(SPI_USER, 0x1C)

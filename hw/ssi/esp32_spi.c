@@ -53,6 +53,9 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
     case A_SPI_CTRL:
         r = s->ctrl_reg;
         break;
+    case A_SPI_STATUS:
+        r = s->status_reg;
+        break;
     case A_SPI_CTRL1:
         r = s->ctrl1_reg;
         break;
@@ -100,6 +103,9 @@ static void esp32_spi_write(void *opaque, hwaddr addr,
         break;
     case A_SPI_CTRL:
         s->ctrl_reg = value;
+        break;
+    case A_SPI_STATUS:
+        s->status_reg = value;
         break;
     case A_SPI_CTRL1:
         s->ctrl1_reg = value;
@@ -209,13 +215,13 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
 
     case R_SPI_CMD_RDSR_MASK:
         t.cmd = CMD_RDSR;
-        t.data = &s->data_reg[0];
+        t.data = &s->status_reg;
         t.data_rx_bytes = 1;
         break;
 
     case R_SPI_CMD_WRSR_MASK:
         t.cmd = CMD_WRSR;
-        t.data = &s->data_reg[0];
+        t.data = &s->status_reg;
         t.data_tx_bytes = 1;
         break;
 
@@ -255,7 +261,7 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
         break;
 
     case R_SPI_CMD_USR_MASK:
-        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND)) {
+        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN)) {
             t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
             t.cmd_bytes = bitlen_to_bytes(FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN));
         } else {
@@ -293,6 +299,7 @@ static void esp32_spi_reset(DeviceState *dev)
     s->pin_reg = 0x6;
     s->user1_reg = FIELD_DP32(0, SPI_USER1, ADDR_BITLEN, 23);
     s->user1_reg = FIELD_DP32(s->user1_reg, SPI_USER1, DUMMY_CYCLELEN, 7);
+    s->status_reg = 0;
 }
 
 static void esp32_spi_realize(DeviceState *dev, Error **errp)
