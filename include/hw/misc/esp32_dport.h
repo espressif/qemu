@@ -56,7 +56,6 @@ typedef struct Esp32CacheRegionState {
     Esp32CacheRegionType type;
     uint32_t enable_mask;
     hwaddr base;
-    uint8_t* cache_data;
     uint16_t mmu_table[ESP32_CACHE_PAGES_PER_REGION];
 } Esp32CacheRegionState;
 

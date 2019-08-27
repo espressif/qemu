@@ -109,6 +109,7 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
 {
     Esp32DportState *s = ESP32_DPORT(opaque);
     bool old_state;
+    uint32_t old_val;
     switch (addr) {
     case A_DPORT_APPCPU_RESET:
         old_state = s->appcpu_reset_state;
@@ -139,12 +140,18 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
             esp32_cache_data_sync(&s->cache_state[0].drom0);
             esp32_cache_data_sync(&s->cache_state[0].iram0);
         }
+        old_val = s->cache_state[0].cache_ctrl_reg;
         s->cache_state[0].cache_ctrl_reg = value;
-        esp32_cache_state_update(&s->cache_state[0]);
+        if (value != old_val) {
+            esp32_cache_state_update(&s->cache_state[0]);
+        }
         break;
     case A_DPORT_PRO_CACHE_CTRL1:
+        old_val = s->cache_state[0].cache_ctrl1_reg;
         s->cache_state[0].cache_ctrl1_reg = value;
-        esp32_cache_state_update(&s->cache_state[0]);
+        if (value != old_val) {
+            esp32_cache_state_update(&s->cache_state[0]);
+        }
         break;
     case A_DPORT_APP_CACHE_CTRL:
         if (FIELD_EX32(value, DPORT_APP_CACHE_CTRL, CACHE_FLUSH_ENA)) {
@@ -153,12 +160,18 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
             esp32_cache_data_sync(&s->cache_state[1].drom0);
             esp32_cache_data_sync(&s->cache_state[1].iram0);
         }
+        old_val = s->cache_state[1].cache_ctrl_reg;
         s->cache_state[1].cache_ctrl_reg = value;
-        esp32_cache_state_update(&s->cache_state[1]);
+        if (value != old_val) {
+            esp32_cache_state_update(&s->cache_state[1]);
+        }
         break;
     case A_DPORT_APP_CACHE_CTRL1:
+        old_val = s->cache_state[1].cache_ctrl1_reg;
         s->cache_state[1].cache_ctrl1_reg = value;
-        esp32_cache_state_update(&s->cache_state[1]);
+        if (value != old_val) {
+            esp32_cache_state_update(&s->cache_state[1]);
+        }
         break;
     case PRO_DROM0_MMU_FIRST ... PRO_DROM0_MMU_LAST:
         set_mmu_entry(&s->cache_state[0].drom0, PRO_DROM0_MMU_FIRST, addr, value);
@@ -180,15 +193,6 @@ static const MemoryRegionOps esp32_dport_ops = {
     .write = esp32_dport_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
-
-static uint64_t esp32_cache_read(void *opaque, hwaddr addr, unsigned int size)
-{
-    Esp32CacheRegionState* crs = (Esp32CacheRegionState*) opaque;
-    uint32_t result;
-    assert(addr < ESP32_CACHE_REGION_SIZE);
-    memcpy(&result, crs->cache_data + addr, size);
-    return result;
-}
 
 static void esp32_cache_data_sync(Esp32CacheRegionState* crs)
 {
@@ -230,7 +234,6 @@ static void esp32_cache_state_update(Esp32CacheState* cs)
 }
 
 static const MemoryRegionOps esp32_cache_ops = {
-    .read =  esp32_cache_read,
     .write = NULL,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
@@ -283,7 +286,6 @@ static void esp32_cache_init_region(Esp32CacheState *cs,
     memory_region_init_rom_device(&crs->mem, OBJECT(cs->dport),
                                   &esp32_cache_ops, crs,
                                   desc, ESP32_CACHE_REGION_SIZE, &error_abort);
-//    crs->cache_data = qemu_memalign(4096, ESP32_CACHE_REGION_SIZE);
 }
 
 static void esp32_dport_init(Object *obj)
