@@ -13,6 +13,7 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
+#include "hw/irq.h"
 #include "hw/registerfields.h"
 #include "hw/misc/esp32_reg.h"
 #include "hw/misc/esp32_dport.h"
