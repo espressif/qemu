@@ -59,10 +59,14 @@ static void esp32_sha_update_text(Esp32ShaState* s, QCryptoHashAlgorithm hash_al
 {
     esp32_sha_text_reg_byteswap(s);
     uint32_t block_len_bytes = hash_block_bytes[hash_alg];
-    uint8_t *new_full_text = g_realloc(s->full_text, s->full_text_len + block_len_bytes);
-    memcpy(new_full_text + s->full_text_len, s->text, block_len_bytes);
+    if (s->full_text_len + block_len_bytes > s->full_text_reserved) {
+        uint32_t full_text_reserved = MAX(s->full_text_reserved * 2, block_len_bytes * 4);
+        uint8_t *new_full_text = g_realloc(s->full_text, full_text_reserved);
+        s->full_text_reserved = full_text_reserved;
+        s->full_text = new_full_text;
+    }
+    memcpy(s->full_text + s->full_text_len, s->text, block_len_bytes);
     s->full_text_len += block_len_bytes;
-    s->full_text = new_full_text;
 }
 
 static void esp32_sha_finish(Esp32ShaState *s, QCryptoHashAlgorithm hash_alg)
@@ -91,6 +95,7 @@ static void esp32_sha_finish(Esp32ShaState *s, QCryptoHashAlgorithm hash_alg)
     g_free(s->full_text);
     s->full_text = NULL;
     s->full_text_len = 0;
+    s->full_text_reserved = 0;
 }
 
 static uint64_t esp32_sha_read(void *opaque, hwaddr addr, unsigned int size)
@@ -144,6 +149,7 @@ static void esp32_sha_reset(DeviceState *dev)
     g_free(s->full_text);
     s->full_text = NULL;
     s->full_text_len = 0;
+    s->full_text_reserved = 0;
 }
 
 static void esp32_sha_init(Object *obj)

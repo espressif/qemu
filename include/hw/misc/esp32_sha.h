@@ -15,6 +15,7 @@ typedef struct Esp32ShaState {
     MemoryRegion iomem;
     uint32_t text[ESP32_SHA_TEXT_REG_CNT];
     uint8_t* full_text;
+    uint32_t full_text_reserved;
     uint32_t full_text_len;
 } Esp32ShaState;
 
