@@ -44,9 +44,9 @@ static const struct MemmapEntry {
     hwaddr base;
     hwaddr size;
 } esp_rvtest_memmap[] = {
-    [ESP_RVTEST_DRAM] = { 0x3FFB0000, 0x4000 },
-    [ESP_RVTEST_IRAM] = { 0x40080000, 0x4000 },
-    [ESP_RVTEST_UART] = { 0x3ff40000, 0x1000 },
+    [ESP_RVTEST_DRAM] = { 0x3FFB0000, 0x04000 },
+    [ESP_RVTEST_IRAM] = { 0x00010000, 0x40000 },
+    [ESP_RVTEST_UART] = { 0x3ff40000, 0x1000  },
 };
 
 static void riscv_esp_rvtest_cpu_init(Object *obj)
@@ -55,7 +55,7 @@ static void riscv_esp_rvtest_cpu_init(Object *obj)
     cpu->cfg.mmu = false;
     cpu->cfg.pmp = false;
     CPURISCVState *env = &cpu->env;
-    env->misa = RV32 | RVI | RVM | RVC;
+    env->misa = RV32 | RVI | RVM | RVC | RVD | RVF;
     env->priv_ver = PRIV_VERSION_1_11_0;
     env->resetvec = esp_rvtest_memmap[ESP_RVTEST_IRAM].base;
     env->features = 0;
