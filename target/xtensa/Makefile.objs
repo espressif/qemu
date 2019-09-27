@@ -14,3 +14,4 @@ obj-y += fpu_helper.o
 obj-y += gdbstub.o
 obj-$(CONFIG_SOFTMMU) += mmu_helper.o
 obj-y += win_helper.o
+obj-$(CONFIG_ESP32) += core-esp32.o
