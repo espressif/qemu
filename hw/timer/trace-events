@@ -74,3 +74,10 @@ nrf51_timer_write(uint64_t addr, uint32_t value, unsigned size) "write addr 0x%"
 bcm2835_systmr_irq(bool enable) "timer irq state %u"
 bcm2835_systmr_read(uint64_t offset, uint64_t data) "timer read: offset 0x%" PRIx64 " data 0x%" PRIx64
 bcm2835_systmr_write(uint64_t offset, uint64_t data) "timer write: offset 0x%" PRIx64 " data 0x%" PRIx64
+
+# esp32_frc_timer.c
+esp32_frc_timer_read(uint64_t addr, uint32_t value) "read addr 0x%" PRIx64 " data 0x%" PRIx32
+esp32_frc_timer_write(uint64_t addr, uint32_t value) "write addr 0x%" PRIx64 " data 0x%" PRIx32
+esp32_frc_timer_update_config(uint64_t ns_now, uint32_t count_now, bool enable, bool level_int, bool autoload, uint32_t prescaler) "update now: %" PRIu64 " count: 0x%" PRIx32 " enable: %" PRIu8 " level_int: %" PRIu8 " autoload: %" PRIu8 " prescaler: %" PRIu32  
+esp32_frc_timer_cb(uint64_t ns_now, uint32_t count_now) "alarm now: %" PRIu64 " count: 0x%" PRIx32
+esp32_frc_timer_update_alarm(uint64_t ns_now, uint32_t count_now, uint64_t ticks, uint64_t ns_to_alarm) "set alarm now: %" PRIu64 " count: 0x%" PRIx32 " ticks: %" PRIu64 " ns_to_alarm: %" PRIu64
