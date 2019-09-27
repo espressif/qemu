@@ -77,6 +77,14 @@ avr_timer16_interrupt_overflow(const char *reason) "overflow: %s"
 avr_timer16_next_alarm(uint64_t delay_ns) "next alarm: %" PRIu64 " ns from now"
 avr_timer16_clksrc_update(uint64_t freq_hz, uint64_t period_ns, uint64_t delay_s) "timer frequency: %" PRIu64 " Hz, period: %" PRIu64 " ns (%" PRId64 " us)"
 
+
+# esp32_frc_timer.c
+esp32_frc_timer_read(uint64_t addr, uint32_t value) "read addr 0x%" PRIx64 " data 0x%" PRIx32
+esp32_frc_timer_write(uint64_t addr, uint32_t value) "write addr 0x%" PRIx64 " data 0x%" PRIx32
+esp32_frc_timer_update_config(uint64_t ns_now, uint32_t count_now, int enable, int level_int, int autoload, uint32_t prescaler) "update now: %" PRIu64 " count: 0x%" PRIx32 " enable: %d level_int: %d autoload: %d prescaler: %" PRIu32
+esp32_frc_timer_cb(uint64_t ns_now, uint32_t count_now) "alarm now: %" PRIu64 " count: 0x%" PRIx32
+esp32_frc_timer_update_alarm(uint64_t ns_now, uint32_t count_now, uint64_t ticks, uint64_t ns_to_alarm) "set alarm now: %" PRIu64 " count: 0x%" PRIx32 " ticks: %" PRIu64 " ns_to_alarm: %" PRIu64
+
 # sse_counter.c
 sse_counter_control_read(uint64_t offset, uint64_t data, unsigned size) "SSE system counter control frame read: offset 0x%" PRIx64 " data 0x%" PRIx64 " size %u"
 sse_counter_control_write(uint64_t offset, uint64_t data, unsigned size) "SSE system counter control framen write: offset 0x%" PRIx64 " data 0x%" PRIx64 " size %u"
