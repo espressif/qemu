@@ -1,24 +1,57 @@
-#
-# This is the GitLab CI configuration file for the mainstream QEMU
-# project: https://gitlab.com/qemu-project/qemu/-/pipelines
-#
-# !!! DO NOT ADD ANY NEW CONFIGURATION TO THIS FILE !!!
-#
-# Only documentation or comments is accepted.
-#
-# To use a different set of jobs than the mainstream QEMU project,
-# you need to set the location of your custom yml file at "custom CI/CD
-# configuration path", on your GitLab CI namespace:
-# https://docs.gitlab.com/ee/ci/pipelines/settings.html#custom-cicd-configuration-path
-#
-# ----------------------------------------------------------------------
-#
-# QEMU CI jobs are based on templates. Some templates provide
-# user-configurable options, modifiable via configuration variables.
-#
-# See https://qemu-project.gitlab.io/qemu/devel/ci.html#custom-ci-cd-variables
-# for more information.
-#
+stages:
+  - build
+  - deploy
 
-include:
-  - local: '/.gitlab-ci.d/qemu-project.yml'
+build-linux:
+  stage: build
+  image: $CI_DOCKER_REGISTRY/qemu-build:6
+  tags:
+    - build
+    - amd64
+  artifacts:
+    paths:
+      - dist/esp-qemu-*.tar.bz2
+      - dist/archive_name_*
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - PLATFORM: [x86_64-linux-gnu]
+        TARGET: [riscv32-linux-user, xtensa-softmmu, riscv32-softmmu]
+  script:
+    - VERSION=${CI_COMMIT_TAG:-""}
+    - VERSION=${VERSION#"esp-v"}    # remove prefix in tags like `esp-v7.1.0_20221221`
+    - VERSION=${VERSION#"esp-"}     # remove prefix in tags like `esp-develop-20221221`
+    - VERSION=${VERSION//"-"/"_"}   # replace dashes with underscores in the version
+    - VERSION=${VERSION:-${CI_COMMIT_SHORT_SHA}}
+
+    - ./configure --prefix=/opt/qemu --target-list=${TARGET} --with-pkgversion=${VERSION} --extra-cflags=-Werror --disable-capstone --disable-vnc --disable-sdl --disable-gtk --enable-gcrypt --enable-slirp
+    - ninja -C build install
+
+    - find /opt/qemu/share/qemu -maxdepth 1 -mindepth 1 -not -name 'esp*.bin' -exec rm -rf {} \;
+    - mkdir -p dist
+    - DIST_DIR=${PWD}/dist
+    - export ARCHIVE_NAME=esp-qemu-${TARGET}-${VERSION}-${PLATFORM}.tar.bz2
+    - cd /opt
+    - tar cjvf ${DIST_DIR}/${ARCHIVE_NAME} qemu
+    - echo $ARCHIVE_NAME >${DIST_DIR}/archive_name_${TARGET}_${PLATFORM}
+
+upload_to_http:
+  image: espressif/scp
+  stage: deploy
+  tags:
+    - deploy
+    - shiny
+  when: manual
+  allow_failure: true
+  variables:
+    # don't use "GIT_STRATEGY: none", because we need cleaning old artifacts in 'dist/' that came from previous pipelines
+    SSH_KEY: "$HTTP_UPLOAD_KEY" # used inside 'espressif/scp'
+  script:
+    # List of archives in dist/
+    - FILES=$(find dist -name archive_name_\* -exec cat {} \+)
+    - cd dist
+    - scp ${FILES} ${HTTP_UPLOAD_DIR}
+    # Show info
+    - /bin/ls -l ${FILES}
+    - sha256sum ${FILES}
+    - echo -e "\nArchives were published there:\n\n$(for n in ${FILES}; do echo "${HTTP_PUBLIC_DIR}/${n}"; done)\n"
