@@ -8,3 +8,4 @@ common-obj-$(CONFIG_MSF2) += mss-spi.o
 
 obj-$(CONFIG_OMAP) += omap_spi.o
 obj-$(CONFIG_IMX) += imx_spi.o
+obj-$(CONFIG_ESP32) += esp32_spi.o
