@@ -132,6 +132,7 @@ system_ss.add(when: 'CONFIG_NRF51_SOC', if_true: files('nrf51_rng.c'))
 system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files(
   'esp32_crosscore_int.c',
   'esp32_dport.c',
+  'esp32_rng.c',
 ))
 
 system_ss.add(when: 'CONFIG_GRLIB', if_true: files('grlib_ahb_apb_pnp.c'))
