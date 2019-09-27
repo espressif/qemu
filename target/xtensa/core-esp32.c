@@ -9,7 +9,6 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/gdbstub.h"
-#include "qemu-common.h"
 #include "qemu/host-utils.h"
 
 #include "core-esp32/core-isa.h"
