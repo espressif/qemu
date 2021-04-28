@@ -169,6 +169,8 @@ typedef struct FlashPartInfo {
 
 #define SPANSION_CONTINUOUS_READ_MODE_CMD_LEN 1
 #define WINBOND_CONTINUOUS_READ_MODE_CMD_LEN 1
+#define GIGADEVICE_CONTINUOUS_READ_MODE_CMD_LEN 1
+
 
 static const FlashPartInfo known_devices[] = {
     /* Atmel -- some are (confusingly) marketed as "DataFlash" */
@@ -410,6 +412,7 @@ typedef enum {
     MAN_NUMONYX,
     MAN_WINBOND,
     MAN_SST,
+    MAN_GIGADEVICE,
     MAN_GENERIC,
 } Manufacturer;
 
@@ -478,6 +481,8 @@ static inline Manufacturer get_man(Flash *s)
         return MAN_MACRONIX;
     case 0xBF:
         return MAN_SST;
+    case 0xC8:
+    	return MAN_GIGADEVICE;
     default:
         return MAN_GENERIC;
     }
@@ -860,6 +865,9 @@ static void decode_dio_read_cmd(Flash *s)
     case MAN_WINBOND:
         s->needed_bytes += WINBOND_CONTINUOUS_READ_MODE_CMD_LEN;
         break;
+    case MAN_GIGADEVICE:
+        s->needed_bytes += GIGADEVICE_CONTINUOUS_READ_MODE_CMD_LEN;
+        break;
     case MAN_SPANSION:
         s->needed_bytes += SPANSION_CONTINUOUS_READ_MODE_CMD_LEN;
         s->needed_bytes += extract32(s->spansion_cr2v,
@@ -897,6 +905,7 @@ static void decode_qio_read_cmd(Flash *s)
     /* Dummy cycles modeled with bytes writes instead of bits */
     switch (get_man(s)) {
     case MAN_WINBOND:
+    case MAN_GIGADEVICE:
         s->needed_bytes += WINBOND_CONTINUOUS_READ_MODE_CMD_LEN;
         s->needed_bytes += 4;
         break;
