@@ -49,7 +49,8 @@ void xtensa_count_regs(const XtensaConfig *config,
     for (i = 0; config->gdb_regmap.reg[i].targno >= 0; ++i) {
         if (config->gdb_regmap.reg[i].type != xtRegisterTypeTieState &&
             config->gdb_regmap.reg[i].type != xtRegisterTypeMapped &&
-            config->gdb_regmap.reg[i].type != xtRegisterTypeUnmapped) {
+            config->gdb_regmap.reg[i].type != xtRegisterTypeUnmapped &&
+            config->gdb_regmap.reg[i].type != xtRegisterTypeWindow) {
             ++*n_regs;
             if (count_core_regs) {
                 if ((config->gdb_regmap.reg[i].flags &
