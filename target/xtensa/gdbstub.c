@@ -46,11 +46,17 @@ void xtensa_count_regs(const XtensaConfig *config,
     unsigned i;
     bool count_core_regs = true;
 
+    /* Espressif local: allow changing the behavior here based on QEMU_XTENSA_COUNT_WINDOW_REGS
+     * environment variable.
+     */
+    const char* count_window_regs_env = getenv("QEMU_XTENSA_COUNT_WINDOW_REGS");
+    bool count_window_regs = count_window_regs_env != NULL && strcmp(count_window_regs_env, "0") != 0;
+
     for (i = 0; config->gdb_regmap.reg[i].targno >= 0; ++i) {
         if (config->gdb_regmap.reg[i].type != xtRegisterTypeTieState &&
             config->gdb_regmap.reg[i].type != xtRegisterTypeMapped &&
             config->gdb_regmap.reg[i].type != xtRegisterTypeUnmapped &&
-            config->gdb_regmap.reg[i].type != xtRegisterTypeWindow) {
+            (config->gdb_regmap.reg[i].type != xtRegisterTypeWindow || count_window_regs)) {
             ++*n_regs;
             if (count_core_regs) {
                 if ((config->gdb_regmap.reg[i].flags &
