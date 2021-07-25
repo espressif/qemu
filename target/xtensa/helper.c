@@ -185,6 +185,15 @@ static void xtensa_core_class_init(ObjectClass *oc, void *data)
      * in the gdb/xtensa-config.c inside gdb source tree or inside gdb overlay.
      */
     cc->gdb_num_core_regs = config->gdb_regmap.num_regs;
+
+    /* Espressif local: allow changing the behavior here using
+     * QEMU_XTENSA_CORE_REGS_ONLY environment variable, to support different
+     * GDB builds
+     */
+    const char* core_regs_only = getenv("QEMU_XTENSA_CORE_REGS_ONLY");
+    if (core_regs_only != NULL && strcmp(core_regs_only, "0") != 0) {
+        cc->gdb_num_core_regs = config->gdb_regmap.num_core_regs;
+    }
 }
 
 void xtensa_register_core(XtensaConfigList *node)
