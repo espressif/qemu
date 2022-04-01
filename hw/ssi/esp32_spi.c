@@ -87,6 +87,9 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
     case A_SPI_EXT2:
         r = 0;
         break;
+    case A_SPI_SLAVE:
+        r = BIT(R_SPI_SLAVE_TRANS_DONE_SHIFT) | BIT(R_SPI_SLAVE_TRANS_INTEN_SHIFT);
+        break;
     }
     return r;
 }
