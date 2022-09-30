@@ -45,7 +45,7 @@ static void uart_update_irq(ESP32UARTState *s)
     uint32_t tx_empty_threshold = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, TXFIFO_EMPTY_THRD);
     uint32_t rx_full_threshold = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, RXFIFO_FULL_THRD);
 
-    uint32_t tx_empty_raw = (fifo8_num_free(&s->tx_fifo) <= tx_empty_threshold);
+    uint32_t tx_empty_raw = (fifo8_num_used(&s->tx_fifo) <= tx_empty_threshold);
     uint32_t rx_full_raw = (fifo8_num_used(&s->rx_fifo) >= rx_full_threshold);
     uint32_t tx_done_raw = (fifo8_num_used(&s->tx_fifo) == 0);
     uint32_t rxfifo_tout_raw = (s->rxfifo_tout) ? 1 : 0;
@@ -59,7 +59,7 @@ static void uart_update_irq(ESP32UARTState *s)
 
     uint32_t int_st = s->reg[R_UART_INT_RAW] & s->reg[R_UART_INT_ENA];
     irq = int_st != 0;
-    s->reg[R_UART_INT_ST] |= int_st;
+    s->reg[R_UART_INT_ST] = int_st;
 
     qemu_set_irq(s->irq, irq);
 }
@@ -90,18 +90,11 @@ static uint64_t uart_read(void *opaque, hwaddr addr, unsigned int size)
     case A_UART_HIGHPULSE:
         r = 337;  /* FIXME: this should depend on the APB frequency */
         break;
-
-    case A_UART_MEM_RX_STATUS: {
-        uint32_t fifo_size = fifo8_num_used(&s->rx_fifo);
-        /* The software only cares about the differene between WR_ADDR and RD_ADDR;
-         * to keep things simpler, set RD_ADDR to 0 and WR_ADDR to the number of bytes
-         * in the FIFO. 128 is a special case — write and read pointers should be
-         * the same in this case.
-         */
-        r = FIELD_DP32(0, UART_MEM_RX_STATUS, WR_ADDR, (fifo_size == 128) ? 0 : fifo_size);
+   case A_UART_MEM_CONF:
+        r = FIELD_DP32(r, UART_MEM_CONF, RX_SIZE, (unsigned char)(UART_FIFO_LENGTH/128));
+        r = FIELD_DP32(r, UART_MEM_CONF, TX_SIZE,  (unsigned char)(UART_FIFO_LENGTH/128));
         break;
-    }
-
+ #endif
     case A_UART_DATE:
         r = 0x15122500;
         break;
