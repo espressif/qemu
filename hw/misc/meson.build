@@ -136,6 +136,7 @@ system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files(
   'esp32_rtc_cntl.c',
   'esp32_sha.c',
   'esp32_aes.c',
+  'esp32_ledc.c',
   'esp32_flash_enc.c',
 ))
 
