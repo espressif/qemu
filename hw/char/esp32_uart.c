@@ -94,7 +94,7 @@ static uint64_t uart_read(void *opaque, hwaddr addr, unsigned int size)
         r = FIELD_DP32(r, UART_MEM_CONF, RX_SIZE, (unsigned char)(UART_FIFO_LENGTH/128));
         r = FIELD_DP32(r, UART_MEM_CONF, TX_SIZE,  (unsigned char)(UART_FIFO_LENGTH/128));
         break;
-   case A_UART_MEM_RX_STATUS: {
+    case A_UART_MEM_RX_STATUS: {
         uint32_t fifo_size = fifo8_num_used(&s->rx_fifo);
         /* The software only cares about the differene between WR_ADDR and RD_ADDR;
          * to keep things simpler, set RD_ADDR to 0 and WR_ADDR to the number of bytes
