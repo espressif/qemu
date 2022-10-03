@@ -90,7 +90,7 @@ static uint64_t uart_read(void *opaque, hwaddr addr, unsigned int size)
     case A_UART_HIGHPULSE:
         r = 337;  /* FIXME: this should depend on the APB frequency */
         break;
-   case A_UART_MEM_CONF:
+    case A_UART_MEM_CONF:
         r = FIELD_DP32(r, UART_MEM_CONF, RX_SIZE, (unsigned char)(UART_FIFO_LENGTH/128));
         r = FIELD_DP32(r, UART_MEM_CONF, TX_SIZE,  (unsigned char)(UART_FIFO_LENGTH/128));
         break;
@@ -102,11 +102,11 @@ static uint64_t uart_read(void *opaque, hwaddr addr, unsigned int size)
          * the same in this case.
          */
         r = FIELD_DP32(0, UART_MEM_RX_STATUS, WR_ADDR, (fifo_size == 128) ? 0 : fifo_size);
+        }
         break;
     case A_UART_DATE:
         r = 0x15122500;
         break;
-
     default:
         r = s->reg[addr / 4];
         break;
