@@ -207,7 +207,7 @@ static void esp32_cpu_stall(void* opaque, int n, int level)
     if (n == 0) {
         stall = s->rtc_cntl.cpu_stall_state[0];
     } else {
-        stall = s->rtc_cntl.cpu_stall_state[1] || s->dport.appcpu_stall_state;
+        stall = s->rtc_cntl.cpu_stall_state[1] || s->dport.appcpu_stall_state || (!s->dport.appcpu_clkgate_state) || level;
     }
 
     if (stall != s->cpu[n].env.runstall) {
