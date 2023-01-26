@@ -22,5 +22,6 @@ config XTENSA_ESP32
     select DWC_SDMMC
     select TMP105
     select LED
+    select ESP32_I2C_TCP
 
 

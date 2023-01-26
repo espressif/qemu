@@ -174,4 +174,9 @@ config VIRT_CTRL
 config LASI
     bool
 
+config ESP32_I2C_TCP
+    bool
+    depends on I2C
+    default y if I2C_DEVICES
+
 source macio/Kconfig
