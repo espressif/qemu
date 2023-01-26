@@ -21,5 +21,6 @@ config XTENSA_ESP32
     select OPENCORES_ETH
     select DWC_SDMMC
     select TMP105
+    select ESP32_I2C_TCP
 
 

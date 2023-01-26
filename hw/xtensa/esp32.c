@@ -696,6 +696,7 @@ static void esp32_machine_init_i2c(Esp32SocState *s)
     DeviceState *i2c_master = DEVICE(&s->i2c[0]);
     I2CBus* i2c_bus = I2C_BUS(qdev_get_child_bus(i2c_master, "i2c"));
     I2CSlave* tmp105 = i2c_slave_create_simple(i2c_bus, "tmp105", 0x48);
+    i2c_slave_create_simple(i2c_bus, "esp32_i2c_tcp", 0x7F);
     object_property_set_int(OBJECT(tmp105), "temperature", 25 * 1000, &error_fatal);
 }
 
