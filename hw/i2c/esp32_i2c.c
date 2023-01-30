@@ -210,8 +210,15 @@ static void esp32_i2c_do_transaction(Esp32I2CState * s)
                 break;
             }
             case I2C_OPCODE_READ: {
-                uint8_t data = i2c_recv(s->bus);
-                fifo8_push(&s->rx_fifo, data);
+                size_t length = FIELD_EX32(cmd, I2C_CMD, BYTE_NUM);
+                for (size_t nbytes = 0; nbytes < length; ++nbytes) {
+                    if (fifo8_num_free(&s->rx_fifo) == 0) {
+                        error_report("esp32_i2c: write to I2C RX FIFO while it is full");
+                    } else {
+                        uint8_t data = i2c_recv(s->bus);
+                        fifo8_push(&s->rx_fifo, data);
+                    }
+                }
                 break;
             }
             case I2C_OPCODE_STOP:
