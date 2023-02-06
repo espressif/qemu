@@ -6,11 +6,33 @@ from twisted.protocols.basic import LineReceiver
 from dataclasses import dataclass
 from enum import Enum
 
+
+#
+# This I2C Slave device behaves as a simple memory storage
+# which only holds 256 bytes addressed by one byte
+# in address space from 0x00 to 0xFF
+#
+# To store a byte, send two bytes as one transaction
+# where first byte is an address byte, second one is a data byte
+#
+# When more than two bytes are sent,
+# next data bytes are stored in next addresses
+#
+# To read a byte or bytes, first send a single byte to set a start address
+# then start a recv transaction
+#
+# Set a start address every time you read or write data
+#
+
+
 # i2cset -c 0x7F -r 0x20 0x11 0x22 0x33 0x44 0x55
 # i2cget -c 0x7F -r 0x20 -l 0x0A
 
 HOST = "localhost"
 PORT = 16001
+
+# do not edit
+MEM_SIZE = 256
 
 
 class EVENT(Enum):
@@ -23,7 +45,7 @@ class EVENT(Enum):
 
 @dataclass
 class I2CSlave:
-    mem: bytearray = bytearray(256)
+    mem: bytearray = bytearray(MEM_SIZE)
     mem_addr: int = 0
     curr_addr: int = 0
     first_send: bool = True
@@ -36,7 +58,7 @@ i2cslave = I2CSlave()
 def dump_mem():
     print("Mem:")
     bytes_per_row = 32
-    rows = int(256 / bytes_per_row)
+    rows = int(MEM_SIZE / bytes_per_row)
     for i in range(0, rows):
         begin = i*bytes_per_row
         end = begin+bytes_per_row
@@ -67,7 +89,7 @@ def recv_handler(packet):
     resp = bytearray(packet)
     resp[1] = i2cslave.mem[i2cslave.mem_addr]
     i2cslave.mem_addr += 1
-    if i2cslave.mem_addr == 256:
+    if i2cslave.mem_addr == MEM_SIZE:
         i2cslave.mem_addr = 0
     return bytes(resp)
 
@@ -82,7 +104,7 @@ def send_handler(packet):
         print("data byte: ", hex(packet[1]))
         i2cslave.mem[i2cslave.mem_addr] = packet[1]
         i2cslave.mem_addr += 1
-        if i2cslave.mem_addr == 256:
+        if i2cslave.mem_addr == MEM_SIZE:
             i2cslave.mem_addr = 0
     return packet
 
