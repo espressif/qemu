@@ -669,7 +669,19 @@ static void esp32_machine_init_spi_flash(Esp32SocState *ss, BlockBackend* blk)
     /* "main" flash chip is attached to SPI1, CS0 */
     DeviceState *spi_master = DEVICE(&ss->spi[1]);
     BusState* spi_bus = qdev_get_child_bus(spi_master, "spi");
-    DeviceState *flash_dev = qdev_new("gd25q32");
+
+    /* select the flash chip based on the image size */
+    int64_t image_size = blk_getlength(blk);
+    const char* flash_chip_model = NULL;
+    switch (image_size) {
+        case 2 * 1024 * 1024: flash_chip_model = "w25x16"; break;
+        case 4 * 1024 * 1024: flash_chip_model = "gd25q32"; break;
+        case 8 * 1024 * 1024: flash_chip_model = "gd25q64"; break;
+        case 16 * 1024 * 1024: flash_chip_model = "is25lp128"; break;
+        default: error_report("Error: only 2, 4, 8, 16 MB flash images are supported"); return;
+    }
+
+    DeviceState *flash_dev = qdev_new(flash_chip_model);
     qdev_prop_set_drive(flash_dev, "drive", blk);
     qdev_realize_and_unref(flash_dev, spi_bus, &error_fatal);
     qdev_connect_gpio_out_named(spi_master, SSI_GPIO_CS, 0,
