@@ -112,6 +112,9 @@ static void server_read(void *opaque, const uint8_t *buf, int size)
 
             qobject_unref(dict);
         }
+
+        error_free(err);
+        err = NULL;
     }
 
     /* ignore rest data of the buffer. Is it okay? */
