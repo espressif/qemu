@@ -235,7 +235,8 @@ static void esp32_clk_update(void* opaque, int n, int level)
     qdev_prop_set_int32(DEVICE(&s->frc_timer), "apb_freq", apb_clk_freq);
     qdev_prop_set_int32(DEVICE(&s->timg[0]), "apb_freq", apb_clk_freq);
     qdev_prop_set_int32(DEVICE(&s->timg[1]), "apb_freq", apb_clk_freq);
-    clock_set_hz(s->cpu[0].clock, cpu_clk_freq );
+    clock_update_hz(s->cpu[0].clock, cpu_clk_freq );
+    clock_update_hz(s->cpu[1].clock, cpu_clk_freq );
 }
 
 static void esp32_soc_add_periph_device(MemoryRegion *dest, void* dev, hwaddr dport_base_addr)
