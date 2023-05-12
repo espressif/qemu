@@ -141,7 +141,8 @@ system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files(
   'ssi_psram.c'
 ))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
-  'esp32c3_cache.c'
+  'esp32c3_cache.c',
+  'esp32c3_sha.c'
 ))
 
 if gcrypt.found()
