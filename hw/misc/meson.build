@@ -151,6 +151,9 @@ if gcrypt.found()
   system_ss.add(when: [gcrypt, 'CONFIG_XTENSA_ESP32'], if_true: files(
     'esp32_rsa.c',
   ))
+  system_ss.add(when: [gcrypt, 'CONFIG_RISCV_ESP32C3'], if_true: files(
+    'esp32c3_aes.c',
+  ))
 endif
 
 system_ss.add(when: 'CONFIG_GRLIB', if_true: files('grlib_ahb_apb_pnp.c'))
