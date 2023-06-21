@@ -153,6 +153,7 @@ if gcrypt.found()
   ))
   system_ss.add(when: [gcrypt, 'CONFIG_RISCV_ESP32C3'], if_true: files(
     'esp32c3_aes.c',
+    'esp32c3_rsa.c'
   ))
 endif
 
