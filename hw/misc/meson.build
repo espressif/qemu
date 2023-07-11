@@ -144,7 +144,8 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
   'esp32c3_cache.c',
   'esp32c3_sha.c',
   'esp32c3_jtag.c',
-  'esp32c3_rtc_cntl.c'
+  'esp32c3_rtc_cntl.c',
+  'esp32c3_hmac.c'
 ))
 
 if gcrypt.found()
