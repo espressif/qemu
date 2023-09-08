@@ -42,6 +42,7 @@
 #include "hw/misc/esp32c3_aes.h"
 #include "hw/misc/esp32c3_rsa.h"
 #include "hw/misc/esp32c3_hmac.h"
+#include "hw/misc/esp32c3_ds.h"
 #include "hw/misc/esp32c3_jtag.h"
 #include "hw/dma/esp32c3_gdma.h"
 
@@ -74,6 +75,7 @@ struct Esp32C3MachineState {
     ESP32C3ShaState sha;
     ESP32C3RsaState rsa;
     ESP32C3HmacState hmac;
+    ESP32C3DsState ds;
     ESP32C3TimgState timg[2];
     ESP32C3SysTimerState systimer;
     ESP32C3SpiState spi1;
@@ -301,6 +303,7 @@ static void esp32c3_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "gdma", &ms->gdma, TYPE_ESP32C3_GDMA);
     object_initialize_child(OBJECT(machine), "rsa", &ms->rsa, TYPE_ESP32C3_RSA);
     object_initialize_child(OBJECT(machine), "hmac", &ms->hmac, TYPE_ESP32C3_HMAC);
+    object_initialize_child(OBJECT(machine), "ds", &ms->ds, TYPE_ESP32C3_DS);
     object_initialize_child(OBJECT(machine), "timg0", &ms->timg[0], TYPE_ESP32C3_TIMG);
     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C3_TIMG);
     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C3_SYSTIMER);
@@ -404,14 +407,6 @@ static void esp32c3_machine_init(MachineState *machine)
         }
     }
 
-    /* HMAC realization */
-    {
-        ms->hmac.efuse = &ms->efuse;
-        qdev_realize(DEVICE(&ms->hmac), &ms->periph_bus, &error_fatal);
-        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->hmac), 0);
-        memory_region_add_subregion_overlap(sys_mem, DR_REG_HMAC_BASE, mr, 0);
-    }
-
     /* Timer Groups realization */
     {
         sysbus_realize(SYS_BUS_DEVICE(&ms->timg[0]), &error_fatal);
@@ -493,6 +488,25 @@ static void esp32c3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_RSA_BASE, mr, 0);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->rsa), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_RSA_INTR_SOURCE));
+    }
+
+    /* HMAC realization */
+    {
+        ms->hmac.efuse = &ms->efuse;
+        qdev_realize(DEVICE(&ms->hmac), &ms->periph_bus, &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->hmac), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_HMAC_BASE, mr, 0);
+    }
+
+    /* Digital Signature realization */
+    {
+        ms->ds.hmac = &ms->hmac;
+        ms->ds.aes = &ms->aes;
+        ms->ds.rsa = &ms->rsa;
+        ms->ds.sha = &ms->sha;
+        qdev_realize(DEVICE(&ms->ds), &ms->periph_bus, &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->ds), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_DIGITAL_SIGNATURE_BASE, mr, 0);
     }
 
     /* Open and load the "bios", which is the ROM binary, also named "first stage bootloader" */
