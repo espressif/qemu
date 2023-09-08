@@ -49,8 +49,8 @@ static void esp32c3_aes_ctr_add_counter(ESP32C3AesState *s, uint32_t blocks)
     /* Check the length of this counter in bits. In both cases, it is stored in BIG-ENDIAN */
     if (FIELD_EX32(s->inc_sel_reg, AES_INC_SEL_REG, AES_INC_SEL) == 1) {
         /* 128-bit mode, no native 128 integer type, use two 64-bit types */
-        uint64_t* low_ptr = (uint64_t*) (s->iv_mem + sizeof(uint64_t));
-        uint64_t* high_ptr = (uint64_t*) s->iv_mem;
+        uint64_t *low_ptr = (uint64_t*) (s->iv_mem + sizeof(uint64_t));
+        uint64_t *high_ptr = (uint64_t*) s->iv_mem;
         const uint64_t original = be64_to_cpu(*low_ptr);
         uint64_t value = original + blocks;
         *low_ptr = cpu_to_be64(value);
@@ -61,7 +61,7 @@ static void esp32c3_aes_ctr_add_counter(ESP32C3AesState *s, uint32_t blocks)
         }
     } else {
         /* 32-bit mode */
-        uint32_t* counter_ptr = (uint32_t*) &s->iv_mem[ESP32C3_AES_IV_REG_CNT - sizeof(uint32_t)];
+        uint32_t *counter_ptr = (uint32_t*) &s->iv_mem[ESP32C3_AES_IV_REG_CNT - sizeof(uint32_t)];
         const uint32_t value = be32_to_cpu(*counter_ptr) + blocks;
         *counter_ptr = cpu_to_be32(value);
     }
@@ -111,8 +111,8 @@ static void esp32c3_aes_dma_start(ESP32C3AesState *s)
 
     /* Cast the keys and data to byte array.
      * This can only work as-is if the host computer is has a little-endian CPU.  */
-    const uint8_t* key = (uint8_t*) &s->key;
-    uint8_t* iv_mem = (uint8_t*) &s->iv_mem;
+    const uint8_t *key = (uint8_t*) &s->key;
+    uint8_t *iv_mem = (uint8_t*) &s->iv_mem;
 
     /* Set the algorithm key */
     err = gcry_cipher_setkey(ghandle, key, length / 8);
@@ -147,7 +147,7 @@ static void esp32c3_aes_dma_start(ESP32C3AesState *s)
     /* Block number represents the number of 128-bit (16-byte) blocks to encrypt.
      * If block_num_reg is 100, we have to encrypt 100*128/8 = 1600 bytes */
     uint32_t buf_size = s->block_num_reg * 16;
-    uint8_t* buffer = esp32c3_aes_get_buffer(buf_size);
+    uint8_t *buffer = esp32c3_aes_get_buffer(buf_size);
 
     if ( !esp32c3_gdma_read_channel(s->gdma, gdma_out_idx, buffer, buf_size) ) {
         warn_report("[AES] Error reading from GDMA buffer");
@@ -164,7 +164,7 @@ static void esp32c3_aes_dma_start(ESP32C3AesState *s)
         }
     } else {
         /* Store the last block of plaintext, needed for OFB */
-        const uint8_t* buffer_last_block = buffer + buf_size - ESP32C3_AES_IV_REG_CNT;
+        const uint8_t *buffer_last_block = buffer + buf_size - ESP32C3_AES_IV_REG_CNT;
         uint8_t plaintext[ESP32C3_AES_IV_REG_CNT];
         memcpy(plaintext, buffer_last_block, ESP32C3_AES_IV_REG_CNT);
 
@@ -208,13 +208,12 @@ close_exit:
     gcry_cipher_close(ghandle);
 }
 
-
-static void esp32c3_aes_start(ESP32C3AesState *s)
+static void aes_block_start(ESP32C3AesState *s, const uint32_t *key, const uint32_t *text_in, uint32_t *text_out, const uint32_t mode_reg)
 {
-    AES_KEY aes_key;
+    AES_KEY aes_key_handle;
 
     /* Check whether we have to encrypt or decrypt */
-    const uint32_t mode = FIELD_EX32(s->mode_reg , AES_MODE_REG, AES_MODE);
+    const uint32_t mode = FIELD_EX32(mode_reg, AES_MODE_REG, AES_MODE);
     const bool encrypt = (mode == ESP32C3_AES_MODE_128_ENC) || (mode == ESP32C3_AES_MODE_256_ENC);
     const bool decrypt = (mode == ESP32C3_AES_MODE_128_DEC) || (mode == ESP32C3_AES_MODE_256_DEC);
 
@@ -223,20 +222,16 @@ static void esp32c3_aes_start(ESP32C3AesState *s)
 
     /* Cast the keys and data to byte array.
      * This can only work as-is if the host computer is has a little-endian CPU.  */
-    const uint8_t* key = (uint8_t*) &s->key;
-    const uint8_t* tin = (uint8_t*) &s->text_in;
-    uint8_t* tout = (uint8_t*) &s->text_out;
+    const uint8_t *aes_key = (uint8_t*) key;
+    const uint8_t *tin = (uint8_t*) text_in;
+    uint8_t *tout = (uint8_t*) text_out;
 
     if (encrypt) {
-
-        AES_set_encrypt_key(key, length, &aes_key);
-        AES_encrypt(tin, tout, &aes_key);
-
+        AES_set_encrypt_key(aes_key, length, &aes_key_handle);
+        AES_encrypt(tin, tout, &aes_key_handle);
     } else if (decrypt) {
-
-        AES_set_decrypt_key(key, length, &aes_key);
-        AES_decrypt(tin, tout, &aes_key);
-
+        AES_set_decrypt_key(aes_key, length, &aes_key_handle);
+        AES_decrypt(tin, tout, &aes_key_handle);
     }
 
     s->state_reg = ESP32C3_AES_IDLE;
@@ -322,6 +317,7 @@ static uint64_t esp32c3_aes_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32c3_aes_write(void *opaque, hwaddr addr,
                               uint64_t value, unsigned int size)
 {
+    ESP32C3AesClass *class = ESP32C3_AES_GET_CLASS(opaque);
     ESP32C3AesState *s = ESP32C3_AES(opaque);
     uint32_t offset = 0;
 
@@ -357,7 +353,7 @@ static void esp32c3_aes_write(void *opaque, hwaddr addr,
             if (FIELD_EX32(s->dma_enable_reg , AES_DMA_ENA_REG, AES_DMA_ENA) != 0) {
                 esp32c3_aes_dma_start(s);
             } else {
-                esp32c3_aes_start(s);
+                class->aes_block_start(s, s->key, s->text_in, s->text_out, s->mode_reg);
             }
         }
         break;
@@ -450,12 +446,15 @@ static void esp32c3_aes_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 }
 
-static void esp32_aes_class_init(ObjectClass *klass, void *data)
+static void esp32c3_aes_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    ESP32C3AesClass* esp32c3_aes = ESP32C3_AES_CLASS(klass);
 
     dc->realize = esp32c3_aes_realize;
     dc->reset = esp32c3_aes_reset;
+
+    esp32c3_aes->aes_block_start = aes_block_start;
 }
 
 static const TypeInfo esp32c3_aes_info = {
@@ -463,7 +462,8 @@ static const TypeInfo esp32c3_aes_info = {
         .parent = TYPE_SYS_BUS_DEVICE,
         .instance_size = sizeof(ESP32C3AesState),
         .instance_init = esp32c3_aes_init,
-        .class_init = esp32_aes_class_init
+        .class_init = esp32c3_aes_class_init,
+        .class_size = sizeof(ESP32C3AesClass)
 };
 
 static void esp32c3_aes_register_types(void)

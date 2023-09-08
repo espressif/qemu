@@ -24,9 +24,8 @@
 #define RSA_WARNING 0
 
 static void copy_reversed(unsigned char* dest, size_t dst_size, const unsigned char* src, size_t src_size);
-static bool mpi_block_to_gcrypt(const uint32_t* mem_block, size_t n_bytes, gcry_mpi_t *out);
-static bool mpi_gcrypt_to_block(gcry_mpi_t in, uint32_t* mem_block);
-static void esp32c3_rsa_exp_mod(ESP32C3RsaState *s);
+static bool mpi_block_to_gcrypt(const uint32_t *mem_block, size_t n_bytes, gcry_mpi_t *out);
+static bool mpi_gcrypt_to_block(gcry_mpi_t in, uint32_t *mem_block);
 static void esp32c3_rsa_modmul_start(ESP32C3RsaState *s);
 
 /**
@@ -50,7 +49,7 @@ static void copy_reversed(unsigned char* dst, size_t dst_size, const unsigned ch
  * Converts the little-endian memory block of the RSA peripheral to a new gcry_mpi_t object.
  * The caller is responsible for freeing the returned object.
  */
-static bool mpi_block_to_gcrypt(const uint32_t* mem_block, size_t n_bytes, gcry_mpi_t *out)
+static bool mpi_block_to_gcrypt(const uint32_t *mem_block, size_t n_bytes, gcry_mpi_t *out)
 {
     size_t scanned;
     const unsigned char* mem_u8 = (const unsigned char*) mem_block;
@@ -72,7 +71,7 @@ static bool mpi_block_to_gcrypt(const uint32_t* mem_block, size_t n_bytes, gcry_
 /**
  * Copies an MPI from gcry_mpi_t object to the RSA peripheral memory block.
  */
-static bool mpi_gcrypt_to_block(gcry_mpi_t in, uint32_t* mem_block)
+static bool mpi_gcrypt_to_block(gcry_mpi_t in, uint32_t *mem_block)
 {
     size_t written;
     unsigned char* mem_u8 = (unsigned char*) mem_block;
@@ -90,32 +89,32 @@ static bool mpi_gcrypt_to_block(gcry_mpi_t in, uint32_t* mem_block)
 /** Calculates Z_MEM = X_MEM ^ Y_MEM mod M_MEM.
  *  Unlike the real hardware, doesn't use the mprime register.
  */
-static void esp32c3_rsa_exp_mod(ESP32C3RsaState *s)
+static void esp32c3_rsa_exp_mod(ESP32C3RsaState *s, uint32_t mode_reg, uint32_t *x_mem, uint32_t *y_mem, uint32_t *m_mem, uint32_t *z_mem, uint32_t int_ena)
 {
     gcry_mpi_t x, y, z, m;
 
     /* Get the length of the operands in bytes. Register mode_reg designates the length
      * in 32-bit words. */
-    size_t n_bytes = (s->mode_reg + 1) * 4;
+    size_t n_bytes = (mode_reg + 1) * 4;
 
     /* Convert inputs to gcry_mpi_t */
-    if (!mpi_block_to_gcrypt(s->x_mem, n_bytes, &x)) {
+    if (!mpi_block_to_gcrypt(x_mem, n_bytes, &x)) {
         goto error_ret;
     }
-    if (!mpi_block_to_gcrypt(s->y_mem, n_bytes, &y)) {
+    if (!mpi_block_to_gcrypt(y_mem, n_bytes, &y)) {
         goto error_x;
     }
-    if (!mpi_block_to_gcrypt(s->m_mem, n_bytes, &m)) {
+    if (!mpi_block_to_gcrypt(m_mem, n_bytes, &m)) {
         goto error_y;
     }
 
     /* calculate the result and write it back */
     z = gcry_mpi_new(n_bytes * 8);
     gcry_mpi_powm(z, x, y, m);
-    mpi_gcrypt_to_block(z, s->z_mem);
+    mpi_gcrypt_to_block(z, z_mem);
 
     /* Trigger an interrupt on completion */
-    if (s->int_ena) {
+    if (int_ena) {
         qemu_set_irq(s->irq, 1);
     }
 
@@ -296,6 +295,7 @@ static uint64_t esp32c3_rsa_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32c3_rsa_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
+    ESP32C3RsaClass *class = ESP32C3_RSA_GET_CLASS(opaque);
     ESP32C3RsaState *s = ESP32C3_RSA(opaque);
 
     switch (addr) {
@@ -338,7 +338,7 @@ static void esp32c3_rsa_write(void *opaque, hwaddr addr,
 
         case A_RSA_MODEXP_START_REG:
             if (FIELD_EX32(value, RSA_MODEXP_START_REG, RSA_MODEXP_START)) {
-                esp32c3_rsa_exp_mod(s);
+                class->rsa_exp_mod(s, s->mode_reg, s->x_mem, s->y_mem, s->m_mem, s->z_mem, s->int_ena);
             }
             break;
 
@@ -405,8 +405,11 @@ static void esp32c3_rsa_init(Object *obj)
 static void esp32c3_rsa_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    ESP32C3RsaClass* esp32c3_rsa = ESP32C3_RSA_CLASS(klass);
 
     dc->reset = esp32c3_rsa_reset;
+
+    esp32c3_rsa->rsa_exp_mod = esp32c3_rsa_exp_mod;
 }
 
 static const TypeInfo esp32c3_rsa_info = {
@@ -414,7 +417,8 @@ static const TypeInfo esp32c3_rsa_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(ESP32C3RsaState),
     .instance_init = esp32c3_rsa_init,
-    .class_init = esp32c3_rsa_class_init
+    .class_init = esp32c3_rsa_class_init,
+    .class_size = sizeof(ESP32C3RsaClass)
 };
 
 static void esp32c3_rsa_register_types(void)

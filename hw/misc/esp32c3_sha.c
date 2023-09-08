@@ -21,17 +21,6 @@
 #define SHA_WARNING 0
 #define SHA_DEBUG 0
 
-#define SHA_OP_TYPE_MASK    (1 << 0)
-#define SHA_OP_DMA_MASK     (1 << 1)
-
-typedef enum {
-    OP_START         = 0,
-    OP_CONTINUE      = 1,
-    OP_DMA_START     = SHA_OP_DMA_MASK | OP_START,
-    OP_DMA_CONTINUE  = SHA_OP_DMA_MASK | OP_CONTINUE,
-} ESP32C3ShaOperation;
-
-
 static ESP32C3HashAlg esp32c3_algs[] = {
     [ESP32C3_SHA_1_MODE]    = {
         .init     = (hash_init) sha1_init,
@@ -51,13 +40,13 @@ static ESP32C3HashAlg esp32c3_algs[] = {
 };
 
 
-static void esp32c3_sha_continue_hash(ESP32C3ShaState *s)
+static void esp32c3_sha_continue_hash(ESP32C3ShaState *s, uint32_t mode, uint32_t *message, uint32_t *hash)
 {
-    assert(s->mode <= ESP32C3_SHA_256_MODE);
-    ESP32C3HashAlg alg = esp32c3_algs[s->mode];
+    assert(mode <= ESP32C3_SHA_256_MODE);
+    ESP32C3HashAlg alg = esp32c3_algs[mode];
 
-    alg.compress(&s->context, (uint8_t*) s->message);
-    memcpy(s->hash, &s->context, alg.len);
+    alg.compress(&s->context, (uint8_t*) message);
+    memcpy(hash, &s->context, alg.len);
 }
 
 
@@ -82,7 +71,7 @@ static void esp32c3_sha_continue_dma(ESP32C3ShaState *s)
     }
 
     /* Allocate the buffer that will contain the data and get teh actual data */
-    uint8_t* buffer = g_malloc(blocks * ESP32C3_MESSAGE_SIZE);
+    uint8_t *buffer = g_malloc(blocks * ESP32C3_MESSAGE_SIZE);
     if (buffer == NULL)
     {
         error_report("[SHA] No more memory in host!");
@@ -111,9 +100,9 @@ static void esp32c3_sha_continue_dma(ESP32C3ShaState *s)
 }
 
 
-static void esp32c3_sha_start(ESP32C3ShaState *s, ESP32C3ShaOperation op)
+static void esp32c3_sha_start(ESP32C3ShaState *s, ESP32C3ShaOperation op, uint32_t mode, uint32_t *message, uint32_t *hash)
 {
-    ESP32C3HashAlg alg = esp32c3_algs[s->mode];
+    ESP32C3HashAlg alg = esp32c3_algs[mode];
     assert(alg.init && alg.compress);
 
     if ((op & SHA_OP_TYPE_MASK) == OP_START) {
@@ -121,13 +110,13 @@ static void esp32c3_sha_start(ESP32C3ShaState *s, ESP32C3ShaOperation op)
     } else {
         /* Continue operation: initialize the context from the current hash.
          * We don't have any accessor to do it so ... do it the "dirty" way */
-        memcpy(&s->context, s->hash, alg.len);
+        memcpy(&s->context, hash, alg.len);
     }
 
     if ((op & SHA_OP_DMA_MASK) == SHA_OP_DMA_MASK) {
         esp32c3_sha_continue_dma(s);
     } else {
-        esp32c3_sha_continue_hash(s);
+        esp32c3_sha_continue_hash(s, mode, message, hash);
     }
 }
 
@@ -182,6 +171,7 @@ static uint64_t esp32c3_sha_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32c3_sha_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
+    ESP32C3ShaClass *class = ESP32C3_SHA_GET_CLASS(opaque);
     ESP32C3ShaState *s = ESP32C3_SHA(opaque);
     hwaddr index = 0;
 
@@ -198,13 +188,13 @@ static void esp32c3_sha_write(void *opaque, hwaddr addr,
 
     case A_SHA_START:
         if (FIELD_EX32(value, SHA_START, START)) {
-            esp32c3_sha_start(s, OP_START);
+            class->sha_start(s, OP_START, s->mode, s->message, s->hash);
         }
         break;
 
     case A_SHA_CONTINUE:
         if (FIELD_EX32(value, SHA_CONTINUE, CONTINUE)) {
-            esp32c3_sha_start(s, OP_CONTINUE);
+            class->sha_start(s, OP_CONTINUE, s->mode, s->message, s->hash);
         }
         break;
 
@@ -228,13 +218,13 @@ static void esp32c3_sha_write(void *opaque, hwaddr addr,
 
     case A_SHA_DMA_START:
         if (FIELD_EX32(value, SHA_DMA_START, DMA_START)) {
-            esp32c3_sha_start(s, OP_DMA_START);
+            class->sha_start(s, OP_DMA_START, s->mode, s->message, s->hash);
         }
         break;
 
     case A_SHA_DMA_CONTINUE:
         if (FIELD_EX32(value, SHA_DMA_CONTINUE, DMA_CONTINUE)) {
-            esp32c3_sha_start(s, OP_DMA_CONTINUE);
+            class->sha_start(s, OP_DMA_CONTINUE, s->mode, s->message, s->hash);
         }
         break;
 
@@ -297,12 +287,15 @@ static void esp32c3_sha_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 }
 
-static void esp32_sha_class_init(ObjectClass *klass, void *data)
+static void esp32c3_sha_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    ESP32C3ShaClass* esp32c3_sha = ESP32C3_SHA_CLASS(klass);
 
     dc->realize = esp32c3_sha_realize;
     dc->reset = esp32c3_sha_reset;
+
+    esp32c3_sha->sha_start = esp32c3_sha_start;
 }
 
 static const TypeInfo esp32c3_sha_info = {
@@ -310,7 +303,8 @@ static const TypeInfo esp32c3_sha_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(ESP32C3ShaState),
     .instance_init = esp32c3_sha_init,
-    .class_init = esp32_sha_class_init,
+    .class_init = esp32c3_sha_class_init,
+    .class_size = sizeof(ESP32C3ShaClass)
 };
 
 static void esp32c3_sha_register_types(void)

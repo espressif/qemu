@@ -18,6 +18,9 @@
 #define TYPE_ESP32C3_RSA "misc.esp32c3.rsa"
 #define ESP32C3_RSA(obj) OBJECT_CHECK(ESP32C3RsaState, (obj), TYPE_ESP32C3_RSA)
 
+#define ESP32C3_RSA_GET_CLASS(obj) OBJECT_GET_CLASS(ESP32C3RsaClass, obj, TYPE_ESP32C3_RSA)
+#define ESP32C3_RSA_CLASS(klass) OBJECT_CLASS_CHECK(ESP32C3RsaClass, klass, TYPE_ESP32C3_RSA)
+
 #define ESP32C3_RSA_MEM_BLK_SIZE    384
 
 typedef struct ESP32C3RsaState {
@@ -40,6 +43,12 @@ typedef struct ESP32C3RsaState {
     uint32_t int_ena;
     qemu_irq irq;
 } ESP32C3RsaState;
+
+typedef struct ESP32C3RsaClass {
+    SysBusDeviceClass parent_class;
+    /* Virtual methods*/
+    void (*rsa_exp_mod)(ESP32C3RsaState *s, uint32_t mode_reg, uint32_t *x_mem, uint32_t *y_mem, uint32_t *m_mem, uint32_t *z_mem, uint32_t int_ena);
+} ESP32C3RsaClass;
 
 
 REG32(RSA_MEM_M_BLOCK_BASE, 0x000)

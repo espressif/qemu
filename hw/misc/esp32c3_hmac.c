@@ -22,21 +22,20 @@ static void esp32c3_hmac_start(ESP32C3HmacState *s)
 {
     uint8_t efuse_key[32];
     esp32c3_efuse_get_key(s->efuse, s->efuse_block_num, efuse_key);
-    hmac_sha256_init(&s->ctx, efuse_key, 32);
-    memset(s->message, 0, 64);
+    hmac_sha256_init(&s->ctx, efuse_key, sizeof(efuse_key));
     s->message_write_complete = 0;
 }
 
 
-static void esp32c3_hmac_update(ESP32C3HmacState *s)
+static void esp32c3_hmac_update(ESP32C3HmacState *s, uint32_t *message)
 {
-    hmac_sha256_update(&s->ctx, (uint8_t*)(s->message));
+    hmac_sha256_update(&s->ctx, (uint8_t*)(message));
 }
 
 
-static void esp32c3_hmac_finish(ESP32C3HmacState *s)
+static void esp32c3_hmac_finish(ESP32C3HmacState *s, uint32_t *result)
 {
-    hmac_sha256_final(&s->ctx, (uint8_t*) s->result, sizeof(s->result));
+    hmac_sha256_final(&s->ctx, (uint8_t*) result, sizeof(result));
 }
 
 
@@ -81,6 +80,7 @@ static uint64_t esp32c3_hmac_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32c3_hmac_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
+    ESP32C3HmacClass *class = ESP32C3_HMAC_GET_CLASS(opaque);
     ESP32C3HmacState *s = ESP32C3_HMAC(opaque);
 
     switch (addr) {
@@ -92,9 +92,9 @@ static void esp32c3_hmac_write(void *opaque, hwaddr addr,
             break;
 
         case A_HMAC_SET_MESSAGE_ONE_REG:
-            esp32c3_hmac_update(s);
+            class->hmac_update(s, s->message);
             if(s->message_write_complete) {
-                esp32c3_hmac_finish(s);
+                class->hmac_finish(s, s->result);
             }
             break;
 
@@ -102,7 +102,7 @@ static void esp32c3_hmac_write(void *opaque, hwaddr addr,
             break;
 
         case A_HMAC_SET_RESULT_FINISH_REG:
-            memset(s->result, 0, 32);
+            memset(s->result, 0, sizeof(s->result));
             break;
 
         case A_HMAC_SET_INVALIDATE_JTAG_REG:
@@ -129,7 +129,7 @@ static void esp32c3_hmac_write(void *opaque, hwaddr addr,
 
         case A_HMAC_ONE_BLOCK_REG:
             s->message_write_complete = 1;
-            esp32c3_hmac_finish(s);
+            esp32c3_hmac_finish(s, s->result);
             break;
 
         case A_HMAC_SET_MESSAGE_END_REG:
@@ -156,6 +156,27 @@ static const MemoryRegionOps esp32c3_hmac_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+static void esp32c3_hmac_reset(DeviceState *dev)
+{
+    ESP32C3HmacState *s = ESP32C3_HMAC(dev);
+    memset(s->message, 0, sizeof(s->message));
+    memset(s->result, 0, sizeof(s->result));
+
+    s->efuse_block_num = 0;
+    s->efuse_key_purpose = 0;
+    s->message_write_complete = 0;
+}
+
+static void esp32c3_hmac_realize(DeviceState *dev, Error **errp)
+{
+    ESP32C3HmacState *s = ESP32C3_HMAC(dev);
+
+    /* Make sure Efuse was set of issue an error */
+    if (s->efuse == NULL) {
+        error_report("[HMAC] Efuse controller must be set!");
+    }
+}
+
 static void esp32c3_hmac_init(Object *obj)
 {
     ESP32C3HmacState *s = ESP32C3_HMAC(obj);
@@ -166,11 +187,25 @@ static void esp32c3_hmac_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
+static void esp32c3_hmac_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    ESP32C3HmacClass* esp32c3_hmac = ESP32C3_HMAC_CLASS(klass);
+
+    dc->realize = esp32c3_hmac_realize;
+    dc->reset = esp32c3_hmac_reset;
+
+    esp32c3_hmac->hmac_update = esp32c3_hmac_update;
+    esp32c3_hmac->hmac_finish = esp32c3_hmac_finish;
+}
+
 static const TypeInfo esp32c3_hmac_info = {
     .name = TYPE_ESP32C3_HMAC,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(ESP32C3HmacState),
     .instance_init = esp32c3_hmac_init,
+    .class_init = esp32c3_hmac_class_init,
+    .class_size = sizeof(ESP32C3HmacClass)
 };
 
 static void esp32c3_hmac_register_types(void)

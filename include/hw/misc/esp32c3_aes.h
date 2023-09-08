@@ -17,6 +17,9 @@
 #define TYPE_ESP32C3_AES "misc.esp32c3.aes"
 #define ESP32C3_AES(obj) OBJECT_CHECK(ESP32C3AesState, (obj), TYPE_ESP32C3_AES)
 
+#define ESP32C3_AES_GET_CLASS(obj) OBJECT_GET_CLASS(ESP32C3AesClass, obj, TYPE_ESP32C3_AES)
+#define ESP32C3_AES_CLASS(klass) OBJECT_CLASS_CHECK(ESP32C3AesClass, klass, TYPE_ESP32C3_AES)
+
 #define ESP32C3_AES_REGS_SIZE (A_AES_DMA_EXIT_REG + 4)
 
 #define ESP32C3_AES_TEXT_REG_CNT 4
@@ -70,6 +73,13 @@ typedef struct ESP32C3AesState {
     /* Public: must be set by the machine before realizing current instance */
     ESP32C3GdmaState *gdma;
 } ESP32C3AesState;
+
+
+typedef struct ESP32C3AesClass {
+    SysBusDeviceClass parent_class;
+    /* Virtual methods*/
+    void (*aes_block_start)(ESP32C3AesState *s, const uint32_t *key, const uint32_t *text_in, uint32_t *text_out, const uint32_t mode_reg);
+} ESP32C3AesClass;
 
 
 REG32(AES_KEY_0_REG, 0x00)

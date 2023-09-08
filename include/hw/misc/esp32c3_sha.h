@@ -12,6 +12,9 @@
 #define TYPE_ESP32C3_SHA "misc.esp32c3.sha"
 #define ESP32C3_SHA(obj) OBJECT_CHECK(ESP32C3ShaState, (obj), TYPE_ESP32C3_SHA)
 
+#define ESP32C3_SHA_GET_CLASS(obj) OBJECT_GET_CLASS(ESP32C3ShaClass, obj, TYPE_ESP32C3_SHA)
+#define ESP32C3_SHA_CLASS(klass) OBJECT_CLASS_CHECK(ESP32C3ShaClass, klass, TYPE_ESP32C3_SHA)
+
 #define ESP32C3_SHA_REGS_SIZE (0xC0)
 
 
@@ -31,6 +34,16 @@ typedef enum {
     ESP32C3_SHA_256_MODE = 2,
 } ESP32C3ShaMode;
 
+
+#define SHA_OP_TYPE_MASK    (1 << 0)
+#define SHA_OP_DMA_MASK     (1 << 1)
+
+typedef enum {
+    OP_START         = 0,
+    OP_CONTINUE      = 1,
+    OP_DMA_START     = SHA_OP_DMA_MASK | OP_START,
+    OP_DMA_CONTINUE  = SHA_OP_DMA_MASK | OP_CONTINUE,
+} ESP32C3ShaOperation;
 
 typedef union {
     struct sha256_state sha256;
@@ -73,6 +86,12 @@ typedef struct ESP32C3ShaState {
     /* Public: must be set before realizing instance*/
     ESP32C3GdmaState *gdma;
 } ESP32C3ShaState;
+
+typedef struct ESP32C3ShaClass {
+    SysBusDeviceClass parent_class;
+    /* Virtual methods*/
+    void (*sha_start)(ESP32C3ShaState *s, ESP32C3ShaOperation op, uint32_t mode, uint32_t *message, uint32_t *hash);
+} ESP32C3ShaClass;
 
 
 REG32(SHA_MODE, 0x000)
