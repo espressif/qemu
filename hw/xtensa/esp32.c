@@ -275,6 +275,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     MemoryRegion *rtcfast_d = g_new(MemoryRegion, 1);
 
     for (int i = 0; i < ms->smp.cpus; ++i) {
+        assert(i >= 0 && i <= 9);
         MemoryRegion *drom = g_new(MemoryRegion, 1);
         MemoryRegion *irom = g_new(MemoryRegion, 1);
 
