@@ -13,6 +13,11 @@
 #include "hw/misc/esp32_aes.h"
 #include "hw/misc/esp32_ledc.h"
 #include "hw/misc/esp32_rsa.h"
+#include "hw/misc/esp32_unknown.h"
+#include "hw/misc/esp32_ana.h"
+#include "hw/misc/esp32_wifi.h"
+#include "hw/misc/esp32_phya.h"
+#include "hw/misc/esp32_fe.h"
 #include "hw/timer/esp32_frc_timer.h"
 #include "hw/timer/esp32_timg.h"
 #include "hw/misc/esp32_crosscore_int.h"
@@ -46,8 +51,16 @@ typedef struct Esp32SocState {
     Esp32LEDCState ledc;
     Esp32EfuseState efuse;
     Esp32FlashEncryptionState flash_enc;
+    Esp32UnknownState unknown;
+    Esp32AnaState ana;
+    Esp32WifiState wifi;
+    Esp32PhyaState phya;
+    Esp32FeState fe;
+
     DWCSDMMCState sdmmc;
     DeviceState *eth;
+    DeviceState *wifi_dev;
+
 
     BusState rtc_bus;
     BusState periph_bus;

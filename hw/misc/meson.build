@@ -5,7 +5,7 @@ softmmu_ss.add(when: 'CONFIG_ISA_DEBUG', if_true: files('debugexit.c'))
 softmmu_ss.add(when: 'CONFIG_ISA_TESTDEV', if_true: files('pc-testdev.c'))
 softmmu_ss.add(when: 'CONFIG_PCA9552', if_true: files('pca9552.c'))
 softmmu_ss.add(when: 'CONFIG_PCI_TESTDEV', if_true: files('pci-testdev.c'))
-softmmu_ss.add(when: 'CONFIG_UNIMP', if_true: files('unimp.c'))
+softmmu_ss.add(when: 'CONFIG_UNIMP', if_true: files('unimp.c', 'unimp-default.c'))
 softmmu_ss.add(when: 'CONFIG_EMPTY_SLOT', if_true: files('empty_slot.c'))
 softmmu_ss.add(when: 'CONFIG_LED', if_true: files('led.c'))
 softmmu_ss.add(when: 'CONFIG_PVPANIC_COMMON', if_true: files('pvpanic.c'))
@@ -134,6 +134,13 @@ softmmu_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files(
   'esp32_aes.c',
   'esp32_ledc.c',
   'esp32_flash_enc.c',
+  'esp32_unknown.c',
+  'esp32_ana.c',
+  'esp32_wifi.c',
+  'esp32_wifi_ap.c',
+  'esp32_wlan_packet.c',
+  'esp32_phya.c',
+  'esp32_fe.c',
   'ssi_psram.c'
 ))
 softmmu_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(

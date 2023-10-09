@@ -25,6 +25,7 @@
 static void esp32_intmatrix_irq_handler(void *opaque, int n, int level)
 {
     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
+    s->irq_raw[n] = level;
     for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
         if (s->outputs[i] == NULL) {
             continue;
@@ -61,10 +62,20 @@ static uint64_t esp32_intmatrix_read(void* opaque, hwaddr addr, unsigned int siz
 static void esp32_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, unsigned int size)
 {
     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
-    uint8_t* map_entry = get_map_entry(s, addr);
+    int source_index = (addr / sizeof(uint32_t)) % ESP32_INT_MATRIX_INPUTS;
+    uint8_t *map_entry = get_map_entry(s, addr);
+    if (value == INTMATRIX_UNINT_VALUE) {
+        int si = s->irq_raw[source_index];
+        esp32_intmatrix_irq_handler(s, source_index, 0);
+        s->irq_raw[source_index] = si;
+    }
     if (map_entry != NULL) {
         *map_entry = value & 0x1f;
     }
+    if (value != INTMATRIX_UNINT_VALUE && s->irq_raw[source_index]) {
+        esp32_intmatrix_irq_handler(s, source_index, 1);
+    }
+
 }
 
 static const MemoryRegionOps esp_intmatrix_ops = {
@@ -76,6 +87,7 @@ static const MemoryRegionOps esp_intmatrix_ops = {
 static void esp32_intmatrix_reset(DeviceState *dev)
 {
     Esp32IntMatrixState *s = ESP32_INTMATRIX(dev);
+    memset(s->irq_raw, 0, sizeof(s->irq_raw));
     memset(s->irq_map, INTMATRIX_UNINT_VALUE, sizeof(s->irq_map));
     for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
         if (s->outputs[i] == NULL) {

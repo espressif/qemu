@@ -37,7 +37,8 @@
 #define DR_REG_LEDC_BASE                        0x3ff59000
 #define DR_REG_EFUSE_BASE                       0x3ff5A000
 #define DR_REG_SPI_ENCRYPT_BASE                 0x3ff5B000
-#define DR_REG_NRX_BASE                         0x3ff5CC00
+#define DR_REG_NRX_BASE                         0x3ff5C000
+// ^ modified from official value of 0x3ff5CC00
 #define DR_REG_BB_BASE                          0x3ff5D000
 #define DR_REG_PWM_BASE                         0x3ff5E000
 #define DR_REG_TIMERGROUP0_BASE                 0x3ff5F000
@@ -58,6 +59,9 @@
 #define DR_REG_UART2_BASE                       0x3ff6E000
 #define DR_REG_PWM2_BASE                        0x3ff6F000
 #define DR_REG_PWM3_BASE                        0x3ff70000
+#define DR_REG_PHY_BASE                         0x3ff71000
+#define DR_REG_WIFI_BASE                        0x3ff73000
+#define DR_REG_PHYA_BASE                        0x3ff74000
 #define DR_REG_WDEV_BASE                        0x3ff75000
 
 #define APB_REG_BASE                            0x60000000
