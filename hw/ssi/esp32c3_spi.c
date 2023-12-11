@@ -406,6 +406,20 @@ static void esp32c3_spi_reset(DeviceState *dev)
 {
     ESP32C3SpiState *s = ESP32C3_SPI(dev);
     memset(s->data_reg, 0, ESP32C3_SPI_BUF_WORDS * sizeof(uint32_t));
+    s->mem_ctrl1 = FIELD_DP32(s->mem_ctrl1, SPI_MEM_CTRL1, CS_HOLD_DLY_RES, 0x3ff);
+    s->mem_clock = FIELD_DP32(s->mem_clock, SPI_MEM_CLOCK, CLKCNT_N, 3);
+    s->mem_clock = FIELD_DP32(s->mem_clock, SPI_MEM_CLOCK, CLKCNT_H, 1);
+    s->mem_clock = FIELD_DP32(s->mem_clock, SPI_MEM_CLOCK, CLKCNT_L, 3);
+
+    s->mem_user = FIELD_DP32(s->mem_user, SPI_MEM_USER, USR_COMMAND, 1);
+
+    s->mem_user1 = FIELD_DP32(s->mem_user1, SPI_MEM_USER1, USR_ADDR_BITLEN, 23);
+    s->mem_user1 = FIELD_DP32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN, 7);
+
+    s->mem_user2 = FIELD_DP32(s->mem_user2, SPI_MEM_USER2, USR_COMMAND_BITLEN, 7);
+
+    /* In case more registers are supported in the future (MEM_MISC, MEM_TX_CRC, ...)
+     * update this function with their default values */
 }
 
 static void esp32c3_spi_realize(DeviceState *dev, Error **errp)
@@ -421,6 +435,8 @@ static void esp32c3_spi_init(Object *obj)
                           TYPE_ESP32C3_SPI, ESP32C3_SPI_IO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     // sysbus_init_irq(sbd, &s->irq);
+
+    esp32c3_spi_reset(DEVICE(s));
 
     s->spi = ssi_create_bus(DEVICE(s), "spi");
     qdev_init_gpio_out_named(DEVICE(s), &s->cs_gpio[0], SSI_GPIO_CS, ESP32C3_SPI_CS_COUNT);
