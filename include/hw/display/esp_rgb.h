@@ -28,6 +28,7 @@ typedef struct ESPRgbState {
     /* Window size */
     uint32_t width;
     uint32_t height;
+    bool do_update_size;
 
     /* Update area */
     bool update_area;

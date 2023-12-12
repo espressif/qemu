@@ -110,9 +110,7 @@ static void esp_rgb_write(void *opaque, hwaddr addr,
             s->height = MAX(s->height, 10);
 
             /* Update the window size */
-            if (s->con) {
-                qemu_console_resize(s->con, s->width, s->height);
-            }
+            s->do_update_size = true;
             break;
 
         case A_RGB_UPDATE_STATUS:
@@ -146,6 +144,11 @@ static void esp_rgb_write(void *opaque, hwaddr addr,
 static void rgb_update(void* opaque)
 {
     ESPRgbState* s = (ESPRgbState*) opaque;
+
+    if (s->con && s->do_update_size) {
+        qemu_console_resize(s->con, s->width, s->height);
+        s->do_update_size = false;
+    }
 
     if (s->con && s->update_area) {
         uint32_t src = s->color_content;
