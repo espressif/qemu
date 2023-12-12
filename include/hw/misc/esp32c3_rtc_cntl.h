@@ -44,12 +44,15 @@ typedef enum ESP32C3ResetReason {
     ESP32C3_COUNT_RESET            = 24
 } ESP32C3ResetReason;
 
+#define ESP32C3_RTC_CNTL_SCRATCH_REG_COUNT 8
 
 typedef struct ESP32C3RtcCntlState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
 
     uint32_t options0;
+    uint32_t scratch_reg[ESP32C3_RTC_CNTL_SCRATCH_REG_COUNT];
+
     ESP32C3ResetReason reason;
     /* IRQ used to notify the machine that we need a reset */
     qemu_irq cpu_reset;

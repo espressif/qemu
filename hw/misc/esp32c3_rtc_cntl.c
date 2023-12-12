@@ -48,14 +48,24 @@ static uint64_t esp32c3_rtc_cntl_read(void* opaque, hwaddr addr, unsigned int si
         case A_RTC_CNTL_RTC_RESET_STATE:
             r = s->reason;
             break;
+
+        case A_RTC_CNTL_RTC_STORE0:
+        case A_RTC_CNTL_RTC_STORE1:
+        case A_RTC_CNTL_RTC_STORE2:
+        case A_RTC_CNTL_RTC_STORE3:
+            r = s->scratch_reg[(addr - A_RTC_CNTL_RTC_STORE0) / 4];
+            break;
+
         case A_RTC_CNTL_RTC_STORE4:
-            /* XTAL frequency: 40MHz, must be in both upper and lower half-word */
-            r = 0x00280028;
+        case A_RTC_CNTL_RTC_STORE5:
+        case A_RTC_CNTL_RTC_STORE6:
+        case A_RTC_CNTL_RTC_STORE7:
+            r = s->scratch_reg[(addr - A_RTC_CNTL_RTC_STORE4) / 4 + 4];
             break;
         default:
 #if RTCCNTL_WARNING
             /* Other registers are not supported yet */
-            warn_report("[RTCCNTL] Unsupported read to %08lx\n", addr);
+            warn_report("[RTCCNTL] Unsupported read to %08lx", addr);
 #endif
             break;
     }
@@ -81,10 +91,25 @@ static void esp32c3_rtc_cntl_write(void* opaque, hwaddr addr, uint64_t value, un
                 esp32c3_reset_request(opaque, ESP32C3_RTC_SW_CPU_RESET, 1);
             }
             break;
+
+        case A_RTC_CNTL_RTC_STORE0:
+        case A_RTC_CNTL_RTC_STORE1:
+        case A_RTC_CNTL_RTC_STORE2:
+        case A_RTC_CNTL_RTC_STORE3:
+            s->scratch_reg[(addr - A_RTC_CNTL_RTC_STORE0) / 4] = value;
+            break;
+
+        case A_RTC_CNTL_RTC_STORE4:
+        case A_RTC_CNTL_RTC_STORE5:
+        case A_RTC_CNTL_RTC_STORE6:
+        case A_RTC_CNTL_RTC_STORE7:
+            s->scratch_reg[(addr - A_RTC_CNTL_RTC_STORE4) / 4 + 4] = value;
+            break;
+
         default:
 #if RTCCNTL_WARNING
             /* Other registers are not supported yet */
-            warn_report("[RTCCNTL] Unsupported write to %08lx (%08lx)\n", addr, value);
+            warn_report("[RTCCNTL] Unsupported write to %08lx (%08lx)", addr, value);
 #endif
             break;
     }
