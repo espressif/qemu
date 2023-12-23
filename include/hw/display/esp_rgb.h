@@ -14,6 +14,13 @@
 #define ESP_RGB_MAX_HEIGHT  (600)
 #define ESP_RGB_MAX_VRAM_SIZE   (ESP_RGB_MAX_WIDTH * ESP_RGB_MAX_HEIGHT * 4)
 
+#define DEFAULT_BPP (BPP_32)
+
+typedef enum {
+    BPP_16 = 16,
+    BPP_32 = 32
+} BppEnum;
+
 typedef struct ESPRgbState {
     SysBusDevice parent_obj;
 
@@ -28,7 +35,7 @@ typedef struct ESPRgbState {
     /* Window size */
     uint32_t width;
     uint32_t height;
-    bool do_update_size;
+    bool do_update_surface;
 
     /* Update area */
     bool update_area;
@@ -37,9 +44,12 @@ typedef struct ESPRgbState {
     uint32_t to_x;
     uint32_t to_y;
     uint32_t color_content;
+
+    /* BPP */
+    BppEnum bpp;
 } ESPRgbState;
 
-#define ESP_RGB_IO_SIZE (A_RGB_UPDATE_STATUS + 4)
+#define ESP_RGB_IO_SIZE (A_RGB_UPDATE_STATUS + 8)
 
 REG32(RGB_VERSION, 0x00)
     FIELD(RGB_VERSION, MAJOR, 16, 16)
@@ -67,4 +77,4 @@ REG32(RGB_UPDATE_STATUS, 0x14)
      * Automatically cleared by the hardware after window update. */
     FIELD(RGB_UPDATE_STATUS, ENA, 0, 1)
 
-
+REG32(RGB_BPP_VALUE, 0x18)

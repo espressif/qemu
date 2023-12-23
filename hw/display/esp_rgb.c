@@ -27,6 +27,31 @@
 #define RGB_VERSION_MAJOR 0
 #define RGB_VERSION_MINOR 1
 
+static void update_rgb_surface(ESPRgbState* s){
+    DisplaySurface *surface;
+    switch (s->bpp){
+        case BPP_32:
+            surface = qemu_create_displaysurface_from(
+                s->width, s->height,
+                PIXMAN_x8r8g8b8,
+                s->width * 4, NULL
+            );
+            break;
+        case BPP_16:
+            surface= qemu_create_displaysurface_from(
+                s->width, s->height,
+                PIXMAN_r5g6b5,
+                s->width * 2, NULL
+            );
+            break;
+        default:
+            warn_report("[ESP RGB] Invalid %d bpp value", s->bpp);
+            return;
+    }
+    surface->flags = QEMU_ALLOCATED_FLAG;
+    dpy_gfx_replace_surface(s->con, surface);
+};
+
 static uint64_t esp_rgb_read(void *opaque, hwaddr addr, unsigned int size)
 {
     ESPRgbState *s = ESP_RGB(opaque);
@@ -64,6 +89,10 @@ static uint64_t esp_rgb_read(void *opaque, hwaddr addr, unsigned int size)
 
         case A_RGB_UPDATE_STATUS:
             r = s->update_area;
+            break;
+        
+        case A_RGB_BPP_VALUE:
+            r = s->bpp;
             break;
 
         default:
@@ -110,7 +139,7 @@ static void esp_rgb_write(void *opaque, hwaddr addr,
             s->height = MAX(s->height, 10);
 
             /* Update the window size */
-            s->do_update_size = true;
+            s->do_update_surface = true;
             break;
 
         case A_RGB_UPDATE_STATUS:
@@ -131,6 +160,11 @@ static void esp_rgb_write(void *opaque, hwaddr addr,
             s->color_content = (uint32_t) value;
             break;
 
+        case A_RGB_BPP_VALUE:
+            s->bpp = (uint32_t) value;
+            s->do_update_surface = true;
+            break;
+
         default:
 #if RGB_WARNING
             warn_report("[ESP RGB] Unsupported write to 0x%lx (%08lx)", (unsigned long) addr, (unsigned long) value);
@@ -145,9 +179,9 @@ static void rgb_update(void* opaque)
 {
     ESPRgbState* s = (ESPRgbState*) opaque;
 
-    if (s->con && s->do_update_size) {
-        qemu_console_resize(s->con, s->width, s->height);
-        s->do_update_size = false;
+    if (s->con && s->do_update_surface) {
+        update_rgb_surface(s);
+        s->do_update_surface = false;
     }
 
     if (s->con && s->update_area) {
@@ -156,12 +190,13 @@ static void rgb_update(void* opaque)
 
         /* Since we are in a 32bpp configuration, it's enough to cast the framebuffer
          * as a uint32_t pointer */
-        uint32_t* data = surface_data(qemu_console_surface(s->con));
+        const int bpp = s->bpp;
+        void* data = surface_data(qemu_console_surface(s->con));
 
         /* Width and height of the area to update */
         const int width = s->to_x - s->from_x;
         const int height = s->to_y - s->from_y;
-        const int bytes_per_pixel = sizeof(uint32_t);
+        const int bytes_per_pixel = bpp/8;
         const int total_bytes = width * height * bytes_per_pixel;
 
         if (address_space_access_valid(&s->vram_as, src, total_bytes, false, MEMTXATTRS_UNSPECIFIED)) {
@@ -179,14 +214,14 @@ static void rgb_update(void* opaque)
         /* Only perform the copy if the area is valid */
         if (width > 0 && height > 0 &&
             (s->from_x + width) <= s->width && (s->from_y + height) <= s->height) {
-
-            uint32_t* dest = &data[s->from_y * s->width + s->from_x];
+            
+            void* dest = data + (s->from_y * s->width + s->from_x) * bytes_per_pixel;
 
             /* Copy the pixels to the framebuffer */
             for (int i = 0; i < height; i++) {
                 dma_memory_read(src_as, src, dest, width * bytes_per_pixel, MEMTXATTRS_UNSPECIFIED);
                 /* Go to the next line in the destination */
-                dest += s->width;
+                dest += s->width * bytes_per_pixel;
                 /* Same goes for the source */
                 src += width * bytes_per_pixel;
             }
@@ -255,13 +290,15 @@ static void esp_rgb_init(Object *obj)
     s->width = ESP_RGB_MAX_WIDTH;
     s->height = ESP_RGB_MAX_HEIGHT;
     s->update_area = false;
+    s->bpp = DEFAULT_BPP;
 
     if (s->con == NULL) {
         s->con = graphic_console_init(DEVICE(s), 0, &fb_ops, s);
-        qemu_console_resize(s->con, s->width, s->height);
-        uint32_t* data = surface_data(qemu_console_surface(s->con));
+        /* Resize and use corrent color bpp*/
+        update_rgb_surface(s);
+        void * data = surface_data(qemu_console_surface(s->con));
         /* Initialize the window to black */
-        memset(data, 0, ESP_RGB_MAX_VRAM_SIZE);
+        memset(data, 0, (s->width * s->height * s->bpp) / 8);
     }
 
     /* Create a memory region that can be used as a framebuffer by the guest */
