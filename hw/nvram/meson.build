@@ -10,13 +10,17 @@ system_ss.add(when: 'CONFIG_NRF51_SOC', if_true: files('nrf51_nvm.c'))
 system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_efuse.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32c3_efuse.c'))
 system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32c3_efuse.c'))
-system_ss.add(when: 'CONFIG_XLNX_EFUSE', if_true: files('xlnx-efuse.c'))
+system_ss.add(when: 'CONFIG_XLNX_EFUSE', if_true: files(
+                                                   'xlnx-efuse.c',
+                                                   'xlnx-efuse-crc.c'))
 system_ss.add(when: 'CONFIG_XLNX_EFUSE_VERSAL', if_true: files(
                                                    'xlnx-versal-efuse-cache.c',
                                                    'xlnx-versal-efuse-ctrl.c'))
 system_ss.add(when: 'CONFIG_XLNX_EFUSE_ZYNQMP', if_true: files(
                                                    'xlnx-zynqmp-efuse.c'))
-system_ss.add(when: 'CONFIG_XLNX_BBRAM', if_true: files('xlnx-bbram.c'))
+system_ss.add(when: 'CONFIG_XLNX_BBRAM', if_true: files(
+                                                   'xlnx-bbram.c',
+                                                   'xlnx-efuse-crc.c'))
 
 specific_ss.add(when: 'CONFIG_PSERIES', if_true: files('spapr_nvram.c'))
 specific_ss.add(when: 'CONFIG_ACPI', if_true: files('fw_cfg-acpi.c'))
