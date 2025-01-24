@@ -33,7 +33,7 @@ static int get_eid_by_size(uint32_t size_mbytes) {
     default:
         qemu_log_mask(LOG_UNIMP, "%s: PSRAM size %" PRIu32 "MB not implemented\n",
                       __func__, size_mbytes);
-        return 0;
+        return -1;
     }
 }
 
@@ -85,7 +85,7 @@ static void psram_realize(SSIPeripheral *ss, Error **errp)
 {
     SsiPsramState *s = SSI_PSRAM(ss);
     /* Make sure the given size is supported */
-    if (get_eid_by_size(s->size_mbytes) == 0) {
+    if (get_eid_by_size(s->size_mbytes) == -1) {
         error_report("[PSRAM] Invalid size %dMB for the PSRAM", s->size_mbytes);
     }
 
