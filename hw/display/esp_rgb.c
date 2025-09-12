@@ -213,15 +213,16 @@ static void rgb_update(void* opaque)
         if (width > 0 && height > 0 &&
             (s->from_x + width) <= s->width && (s->from_y + height) <= s->height) {
 
+            uint8_t* source = (uint8_t*)src + (s->from_y * s->width + s->from_x) * bytes_per_pixel;
             uint8_t* dest = data + (s->from_y * s->width + s->from_x) * bytes_per_pixel;
 
             /* Copy the pixels to the framebuffer */
             for (int i = 0; i < height; i++) {
-                dma_memory_read(src_as, src, dest, width * bytes_per_pixel, MEMTXATTRS_UNSPECIFIED);
+                dma_memory_read(src_as, (uint32_t)source, dest, width * bytes_per_pixel, MEMTXATTRS_UNSPECIFIED);
                 /* Go to the next line in the destination */
                 dest += s->width * bytes_per_pixel;
                 /* Same goes for the source */
-                src += width * bytes_per_pixel;
+                source += width * bytes_per_pixel;
             }
 
             dpy_gfx_update(s->con, s->from_x, s->from_y, width, height);
