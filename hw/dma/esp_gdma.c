@@ -307,10 +307,10 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
     uint32_t out_addr = ((ESP_GDMA_RAM_ADDR >> 20) << 20) | FIELD_EX32(state->link, GDMA_OUT_LINK, ADDR);
 
     /* Boolean to mark whether we need to check the owner for in and out buffers */
-    const bool owner_check_out = FIELD_EX32(state[ESP_GDMA_OUT_IDX].conf1, GDMA_OUT_CONF1, CHECK_OWNER);
+    const bool owner_check_out = FIELD_EX32(state->conf1, GDMA_OUT_CONF1, CHECK_OWNER);
 
     /* Boolean to mark whether the transmit (out) buffers must have their owner bit cleared here */
-    const bool clear_out = FIELD_EX32(state[ESP_GDMA_OUT_IDX].conf0, GDMA_OUT_CONF0, AUTO_WRBACK);
+    const bool clear_out = FIELD_EX32(state->conf0, GDMA_OUT_CONF0, AUTO_WRBACK);
 
     /* Pointer to the lists that will be browsed by the loop below */
     GdmaLinkedList out_list;
@@ -360,7 +360,7 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
                 out_list.config.owner = 0;
 
                 /* Write back the modified descriptor, should always be valid */
-                valid = esp_gdma_read_descr(s, out_addr, &out_list);
+                valid = esp_gdma_write_descr(s, out_addr, &out_list);
                 assert(valid);
             }
 
