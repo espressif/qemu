@@ -389,6 +389,40 @@ static void ssi_sd_reset(DeviceState *dev)
     s->stopping = 0;
 }
 
+/*
+ * Handle chip select transitions.
+ * When CS goes HIGH (inactive), normally reset the state machine.
+ * However, during data read phases, preserve state to allow multi-transaction
+ * reads (as used by ESP-IDF SDSPI driver which toggles GPIO CS between DMA
+ * transactions).
+ */
+static int ssi_sd_set_cs(SSIPeripheral *dev, bool cs)
+{
+    ssi_sd_state *s = SSI_SD(dev);
+
+    DPRINTF("CS change: %s (mode=%d)\n", cs ? "HIGH (inactive)" : "LOW (active)", s->mode);
+
+    /*
+     * When CS goes inactive (HIGH), reset state machine to command mode,
+     * UNLESS we're in a data read phase. Some drivers (like ESP-IDF SDSPI)
+     * use GPIO-controlled CS and may briefly toggle CS HIGH between DMA
+     * transactions while reading data. Preserve state during data reads
+     * to allow the read to continue.
+     */
+    if (cs) {
+        /* Preserve state during data read phases */
+        if (s->mode != SSI_SD_DATA_READ &&
+            s->mode != SSI_SD_DATA_START &&
+            s->mode != SSI_SD_PREP_DATA &&
+            s->mode != SSI_SD_DATA_CRC16) {
+            s->mode = SSI_SD_CMD;
+            s->arglen = 0;
+            s->response_pos = 0;
+        }
+    }
+    return 0;
+}
+
 static void ssi_sd_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -396,6 +430,7 @@ static void ssi_sd_class_init(ObjectClass *klass, void *data)
 
     k->realize = ssi_sd_realize;
     k->transfer = ssi_sd_transfer;
+    k->set_cs = ssi_sd_set_cs;
     k->cs_polarity = SSI_CS_LOW;
     dc->vmsd = &vmstate_ssi_sd;
     device_class_set_legacy_reset(dc, ssi_sd_reset);
