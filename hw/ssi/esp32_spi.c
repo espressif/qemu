@@ -146,6 +146,7 @@ typedef struct Esp32SpiTransaction {
     uint32_t cmd;
     int addr_bytes;
     uint32_t addr;
+    int dummy_bytes;
     int data_tx_bytes;
     int data_rx_bytes;
     uint32_t* data;
@@ -157,11 +158,11 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
     uint8_t *c_buf = (uint8_t*) buf;
     for (int i = 0; i < bytes; ++i) {
         uint8_t byte = 0;
-        if (byte < tx_bytes) {
+        if (i < tx_bytes) {
             memcpy(&byte, c_buf + i, 1);
         }
         uint32_t res = ssi_transfer(s->spi, byte);
-        if (byte < rx_bytes) {
+        if (i < rx_bytes) {
             memcpy(c_buf + i, &res, 1);
         }
     }
@@ -179,6 +180,9 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
     esp32_spi_cs_set(s, 0);
     esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
     esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
+    for (int d = 0; d < t->dummy_bytes; d++) {
+        ssi_transfer(s->spi, 0);
+    }
     esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
     esp32_spi_cs_set(s, 1);
 }
@@ -284,6 +288,23 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
         if (FIELD_EX32(s->user_reg, SPI_USER, ADDR)) {
             t.addr_bytes = bitlen_to_bytes(FIELD_EX32(s->user1_reg, SPI_USER1, ADDR_BITLEN));
             t.addr = bswap32(s->addr_reg);
+        }
+        /* Inject 1 dummy byte for SPI flash fast-read commands when DUMMY
+         * phase is enabled.  The m25p80 flash model expects this byte
+         * between address and data for DOR/QOR/FastRead etc.
+         * PSRAM commands handle dummy internally - don't inject for them. */
+        if (FIELD_EX32(s->user_reg, SPI_USER, DUMMY)) {
+            switch (FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE)) {
+            case 0x0b: case 0x0c:  /* Fast Read / Fast Read 4B */
+            case 0x3b: case 0x3c:  /* DOR / DOR 4B */
+            case 0x6b: case 0x6c:  /* QOR / QOR 4B */
+            case 0xbb: case 0xbc:  /* DIOR / DIOR 4B */
+            case 0xeb: case 0xec:  /* QIOR / QIOR 4B */
+                t.dummy_bytes = 1;
+                break;
+            default:
+                break;
+            }
         }
         if (FIELD_EX32(s->user_reg, SPI_USER, MOSI)) {
             t.data = &s->data_reg[0];
