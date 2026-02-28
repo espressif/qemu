@@ -175,14 +175,19 @@ static void esp32_spi_cs_set(Esp32SpiState *s, int value)
     }
 }
 
+static void esp32_spi_dummy_cycles(Esp32SpiState *s, int dummy_bytes)
+{
+    for (int i = 0; i < dummy_bytes; i++) {
+        ssi_transfer(s->spi, 0);
+    }
+}
+
 static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
 {
     esp32_spi_cs_set(s, 0);
     esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
     esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
-    for (int d = 0; d < t->dummy_bytes; d++) {
-        ssi_transfer(s->spi, 0);
-    }
+    esp32_spi_dummy_cycles(s, t->dummy_bytes);
     esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
     esp32_spi_cs_set(s, 1);
 }

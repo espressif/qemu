@@ -127,11 +127,11 @@ static void esp32c3_spi_txrx_buffer(ESP32C3SpiState *s,
     int bytes = MAX(tx_bytes, rx_bytes);
     for (int i = 0; i < bytes; ++i) {
         uint8_t byte = 0;
-        if (byte < tx_bytes) {
+        if (i < tx_bytes) {
             memcpy(&byte, tx + i, 1);
         }
         uint32_t res = ssi_transfer(s->spi, byte);
-        if (byte < rx_bytes) {
+        if (i < rx_bytes) {
             memcpy(rx + i, &res, 1);
         }
     }
