@@ -21,6 +21,12 @@ riscv_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files(
         'esp32c6.c',
         'esp32c6_intmatrix.c',
 ))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32H2', if_true: files(
+        'esp32c3_clk.c',
+        'esp32h2_clk.c',
+        'esp32h2.c',
+        'esp32h2_intmatrix.c',
+))
 riscv_ss.add(when: 'CONFIG_RISCV_IOMMU', if_true: files('riscv-iommu.c', 'riscv-iommu-pci.c'))
 
 hw_arch += {'riscv': riscv_ss}

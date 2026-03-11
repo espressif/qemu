@@ -427,7 +427,7 @@ static void esp_t0_config_update(ESPT0State* t0, uint32_t value)
     /* Calculate the new frequency */
     const uint32_t new_divider = FIELD_EX32(value, TIMG_T0CONFIG, DIVIDER);
     const uint64_t new_clk = FIELD_EX32(value, TIMG_T0CONFIG, USE_XTAL) ? ESP_XTAL_CLK : ESP_APB_CLK;
-    const uint64_t new_freq = new_clk / new_divider;
+    const uint64_t new_freq = new_divider ? (new_clk / new_divider) : new_clk;
     if (new_freq != t0->counter.frequency) {
         t0->counter.frequency = new_freq;
     }

@@ -322,6 +322,7 @@ static uint64_t esp_efuse_read(void *opaque, hwaddr addr, unsigned int size)
 {
     ESPEfuseState *s = ESP_EFUSE(opaque);
 
+
 #if EFUSE_DEBUG
     info_report("[EFUSE] Reading 0x%08lx (size: %d)", addr, size);
 #endif
