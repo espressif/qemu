@@ -93,10 +93,10 @@ static void esp_virtual_counter_reset(ESPVirtualCounter* counter)
  */
 static void esp_timg_rtc_cali_update(ESPTimgState *s, uint32_t value)
 {
-    const uint32_t osc_freq_arr[] = {
+    static const uint32_t default_osc_freq[] = {
         [ESP_TIMG_CALI_RC_SLOW_CLK]     = ESP_RC_SLOW_FREQ,
         [ESP_TIMG_CALI_RC_FAST_DIV_CLK] = ESP_RC_FAST_DIV_FREQ,
-        [ESP_TIMG_CALI_XTAL32K_CLK]     = ESP_XTAL32K_FREQ
+        [ESP_TIMG_CALI_XTAL32K_CLK]     = ESP_XTAL32K_FREQ,
     };
     /* Copy the new value to the register but keep RDY bit to 0 (read-only) */
     value &= ~(R_TIMG_RTCCALICFG_RDY_MASK);
@@ -106,13 +106,16 @@ static void esp_timg_rtc_cali_update(ESPTimgState *s, uint32_t value)
 
         /* Get the clock that is being calibrated */
         const uint32_t clk = FIELD_EX32(value, TIMG_RTCCALICFG, CLK_SEL);
-        const uint32_t freq = osc_freq_arr[clk];
+        uint32_t freq = (clk < ARRAY_SIZE(s->cali_osc_freq) && s->cali_osc_freq[clk])
+                        ? s->cali_osc_freq[clk]
+                        : (clk < ARRAY_SIZE(default_osc_freq) ? default_osc_freq[clk] : 0);
 
         /* And the counter that should be reached by this clock */
         const uint32_t max_count = FIELD_EX32(value, TIMG_RTCCALICFG, MAX);
 
         /* Calculate how many clock cycle it would require to the XTAL_CLK to reach this count */
-        const uint32_t xtal_count = (ESP_XTAL_CLK * max_count) / freq;
+        const uint32_t xtal_freq = s->xtal_freq ? s->xtal_freq : ESP_XTAL_CLK;
+        const uint32_t xtal_count = ((uint64_t)xtal_freq * max_count) / freq;
 
         /* Save this count in the RTC Calibration register 1 */
         s->rtc.rtc_cali_cfg_result = xtal_count << R_TIMG_RTCCALICFG1_VALUE_SHIFT;
@@ -150,7 +153,9 @@ static void esp_timg_rtc_cali_check_timeout(ESPTimgState *s, uint32_t value)
 
 static inline uint64_t esp_wdt_ext_clk_frequency(ESPWdtState* wdt)
 {
-    return FIELD_EX32(wdt->config0, TIMG_WDTCONFIG0, USE_XTAL) ? ESP_XTAL_CLK : ESP_APB_CLK;
+    ESPTimgState *s = container_of(wdt, ESPTimgState, wdt);
+    uint32_t xtal = s->xtal_freq ? s->xtal_freq : ESP_XTAL_CLK;
+    return FIELD_EX32(wdt->config0, TIMG_WDTCONFIG0, USE_XTAL) ? xtal : ESP_APB_CLK;
 }
 
 static inline bool esp_wdt_is_writable(ESPWdtState* wdt)
@@ -413,7 +418,7 @@ static void esp_t0_counter_load(ESPT0State* t)
     esp_t0_alarm_update(t);
 }
 
-static void esp_t0_config_update(ESPT0State* t0, uint32_t value)
+static void esp_t0_config_update(ESPTimgState* s, ESPT0State* t0, uint32_t value)
 {
     const uint32_t former_conf = t0->config;
     /* Assign the new configuration while removing the write-only bits */
@@ -426,7 +431,8 @@ static void esp_t0_config_update(ESPT0State* t0, uint32_t value)
 
     /* Calculate the new frequency */
     const uint32_t new_divider = FIELD_EX32(value, TIMG_T0CONFIG, DIVIDER);
-    const uint64_t new_clk = FIELD_EX32(value, TIMG_T0CONFIG, USE_XTAL) ? ESP_XTAL_CLK : ESP_APB_CLK;
+    const uint32_t xtal = s->xtal_freq ? s->xtal_freq : ESP_XTAL_CLK;
+    const uint64_t new_clk = FIELD_EX32(value, TIMG_T0CONFIG, USE_XTAL) ? xtal : ESP_APB_CLK;
     const uint64_t new_freq = new_divider ? (new_clk / new_divider) : new_clk;
     if (new_freq != t0->counter.frequency) {
         t0->counter.frequency = new_freq;
@@ -639,7 +645,7 @@ static void esp_timg_write(void *opaque, hwaddr addr,
 
         /* Timer (T0) related registers */
         case A_TIMG_T0CONFIG:
-            esp_t0_config_update(t, value);
+            esp_t0_config_update(s, t, value);
             break;
         case A_TIMG_T0LO:
         case A_TIMG_T0HI:
