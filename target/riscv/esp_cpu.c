@@ -8,6 +8,7 @@
  * (at your option) any later version.
  */
 #include "qemu/osdep.h"
+#include "qemu/main-loop.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
@@ -18,6 +19,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "sysemu/reset.h"
+#include "exec/cpu-common.h"
 #include "esp_cpu.h"
 
 #define BIT_SET(reg, bit)   ((reg) & BIT(bit))
@@ -25,6 +27,7 @@
 #define SET_BIT(reg, bit)   do { (reg) |= BIT(bit); } while(0)
 
 /* CSR-related */
+#define ESP_CPU_CSR_MTVT        0x307
 #define ESP_CPU_CSR_PCER_M      0x7E0
 #define ESP_CPU_CSR_PCMR_M      0x7E1
 #define ESP_CPU_CSR_MCYCLE_M    0x7E2
@@ -54,6 +57,24 @@
 #define ESP_CPU_CSR_PMAADDR0    0xBD0
 #define ESP_CPU_CSR_PMAADDR15   0xBDF
 
+/* CLIC CSRs (ESP32-C5 and other CLIC-capable ESP cores). */
+#define ESP_CPU_CSR_UTVT          0x007
+#define ESP_CPU_CSR_MTVT          0x307
+#define ESP_CPU_CSR_MNXTI         0x345
+#define ESP_CPU_CSR_MINTSTATUS_A  0x346
+#define ESP_CPU_CSR_MINTTHRESH    0x347
+#define ESP_CPU_CSR_UINTSTATUS    0xCB1
+#define ESP_CPU_CSR_MINTSTATUS    0xFB1
+
+/* Machine Hardware Configuration CSR range (mhcr at 0x7C1, mhint at 0x7C5,
+ * etc.). */
+#define ESP_CPU_CSR_MHCR_FIRST    0x7C0
+#define ESP_CPU_CSR_MHCR_LAST     0x7CF
+
+/* mexstatus on the ESP32-C5 lives at the same number as PCMR_M on older
+ * cores; we keep both names for clarity at the call sites. */
+#define ESP_CPU_CSR_MEXSTATUS     ESP_CPU_CSR_PCMR_M
+
 
 static RISCVException esp_cpu_csr_predicate(CPURISCVState *env, int csrno) {
     return RISCV_EXCP_NONE;
@@ -82,6 +103,29 @@ static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter* cc)
     }
     cc->former_time = now;
     cc->cycles += diff;
+
+    /*
+     * Tight spin loops that poll mcycle (e.g. ets_delay_us) can hold the CPU
+     * in translated-block execution indefinitely, starving the QEMU main loop
+     * of a chance to fire expired QEMUTimers (systimer alarms, etc.).
+     *
+     * Directly run expired virtual-clock timers and then kick the CPU out of
+     * the current TB so pending interrupts (raised by the timer callbacks)
+     * can be delivered.
+     */
+    {
+        static uint64_t last_yield_ns;
+        if (now - last_yield_ns >= 50000) {
+            last_yield_ns = now;
+            /* Timer callbacks expect the BQL, as they have in the main loop */
+            BQL_LOCK_GUARD();
+            bool ran = qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+            if (ran && current_cpu) {
+                cpu_exit(current_cpu);
+            }
+        }
+    }
+
     return cc->cycles;
 }
 
@@ -116,6 +160,24 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = s->pmacfg[csrno - ESP_CPU_CSR_PMACFG0];
     } else if (csrno >= ESP_CPU_CSR_PMAADDR0 && csrno <= ESP_CPU_CSR_PMAADDR15) {
         *ret_value = s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0];
+    } else if (csrno >= ESP_CPU_CSR_MHCR_FIRST && csrno <= ESP_CPU_CSR_MHCR_LAST) {
+        *ret_value = s->mhcr[csrno - ESP_CPU_CSR_MHCR_FIRST];
+    } else if (csrno == ESP_CPU_CSR_MEXSTATUS) {
+        *ret_value = s->mexstatus;
+    } else if (csrno == ESP_CPU_CSR_UTVT) {
+        *ret_value = s->utvt;
+    } else if (csrno == ESP_CPU_CSR_MTVT) {
+        *ret_value = s->mtvt;
+    } else if (csrno == ESP_CPU_CSR_MNXTI) {
+        *ret_value = s->mnxti;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS_A) {
+        *ret_value = s->mintstatus_alt;
+    } else if (csrno == ESP_CPU_CSR_MINTTHRESH) {
+        *ret_value = s->mintthresh;
+    } else if (csrno == ESP_CPU_CSR_UINTSTATUS) {
+        *ret_value = s->uintstatus;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
+        *ret_value = s->mintstatus;
     } else {
         *ret_value = 0;
     }
@@ -139,6 +201,24 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
          * 128-byte granularity (bottom bits hardwired 0); enforce per-SOC
          * masking here if/when this code is exercised on a CLIC SOC. */
         s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_MHCR_FIRST && csrno <= ESP_CPU_CSR_MHCR_LAST) {
+        s->mhcr[csrno - ESP_CPU_CSR_MHCR_FIRST] = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_MEXSTATUS) {
+        s->mexstatus = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_UTVT) {
+        s->utvt = new_value;
+    } else if (csrno == ESP_CPU_CSR_MTVT) {
+        s->mtvt = new_value;
+    } else if (csrno == ESP_CPU_CSR_MNXTI) {
+        s->mnxti = new_value;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS_A) {
+        s->mintstatus_alt = new_value;
+    } else if (csrno == ESP_CPU_CSR_MINTTHRESH) {
+        s->mintthresh = new_value;
+    } else if (csrno == ESP_CPU_CSR_UINTSTATUS) {
+        s->uintstatus = new_value;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
+        s->mintstatus = new_value;
     }
 
     return RISCV_EXCP_NONE;
@@ -328,10 +408,43 @@ static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     }
 
     if (accepted) {
-        const bool vectored = (env->mtvec & 3) == 1;
+        /*
+         * On CLIC-based chips (ESP32-C5), the ROM's
+         * esp_rom_route_intr_matrix() already stores CLIC interrupt
+         * numbers (raw_line + 16) in the mapping registers.  The
+         * interrupt matrix therefore outputs CLIC numbers directly,
+         * so no additional offset is needed here.
+         */
+        unsigned mode = env->mtvec & 3;
 
         env->mcause = RISCV_EXCP_INT_FLAG | cause;
-        env->pc = (env->mtvec >> 2 << 2) + (vectored ? cause * 4 : 0);
+
+        /*
+         * Vectoring dispatch:
+         *  - mtvt non-zero: CLIC table at mtvt + 4*cause holds handler ptr.
+         *  - mtvt zero, mode 3 (CLIC): base from mtvec[31:6], PC = base + 4*cause.
+         *  - mtvt zero, mode 1 (vectored): base from mtvec[31:2], PC = base + 4*cause.
+         *  - mtvt zero, mode 0 (direct): PC = base.
+         */
+        target_ulong mtvt = cpu->mtvt;
+        if (mtvt) {
+            uint32_t handler = 0;
+            cpu_memory_rw_debug(cs, mtvt + 4 * cause,
+                                (uint8_t *)&handler, 4, false);
+            env->pc = le32_to_cpu(handler);
+        } else {
+            target_ulong base;
+            if (mode == 3) {
+                base = (env->mtvec >> 6) << 6;
+            } else {
+                base = env->mtvec >> 2 << 2;
+            }
+            if (mode >= 1) {
+                env->pc = base + 4 * cause;
+            } else {
+                env->pc = base;
+            }
+        }
     }
 
     /* Similarly, make sure the parent IRQ reflects the current state */
@@ -354,6 +467,15 @@ static void esp_cpu_reset(void *opaque)
     cpu->mie_enabled = 0;
     memset(cpu->pmacfg, 0, sizeof(cpu->pmacfg));
     memset(cpu->pmaaddr, 0, sizeof(cpu->pmaaddr));
+    memset(cpu->mhcr, 0, sizeof(cpu->mhcr));
+    cpu->mexstatus = 0;
+    cpu->utvt = 0;
+    cpu->mtvt = 0;
+    cpu->mnxti = 0;
+    cpu->mintstatus_alt = 0;
+    cpu->mintthresh = 0;
+    cpu->uintstatus = 0;
+    cpu->mintstatus = 0;
     qemu_irq_lower(cpu->parent_irq);
     cpu_reset(CPU(cpu));
 }
@@ -457,6 +579,23 @@ static void esp_cpu_init(Object *obj)
 
     /* Override debug CSRs as they are not all supported by QEMU's RISC-V core */
     for (int i = ESP_CPU_CSR_TSELECT; i <= ESP_CPU_CSR_TCONTROL; i++) {
+        riscv_set_csr_ops(i, &esp_cpu_csr_ops);
+    }
+
+    /* CLIC-related CSRs (ESP32-C5 uses CLIC interrupt controller).  Always
+     * registered (zero cost on PLIC SOCs since the guest never touches
+     * them); the CSRs are read/written through the typed fields above. */
+    riscv_set_csr_ops(ESP_CPU_CSR_UTVT,         &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MTVT,         &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MNXTI,        &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MINTSTATUS_A, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MINTTHRESH,   &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_UINTSTATUS,   &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MINTSTATUS,   &esp_cpu_csr_ops);
+
+    /* Machine Hardware Configuration CSRs (ESP32-C5 branch predictor, etc.)
+     * 0x7C0..0x7CF; backed by `mhcr[16]`. */
+    for (int i = ESP_CPU_CSR_MHCR_FIRST; i <= ESP_CPU_CSR_MHCR_LAST; i++) {
         riscv_set_csr_ops(i, &esp_cpu_csr_ops);
     }
 

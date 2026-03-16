@@ -100,6 +100,26 @@ typedef struct EspRISCVCPU {
      * can refresh the per-line IRQ assertion state. */
     void (*mie_changed_cb)(void *opaque);
     void *mie_changed_opaque;
+
+    /* CLIC CSRs (CLIC-based ESP CPUs: ESP32-C5, ESP32-P4).  Same rationale
+     * as the PMA storage above -- not modelled, but values must round-trip.
+     * `mtvt` is also consumed by esp_cpu_exec_interrupt for CLIC vectoring. */
+    target_ulong utvt;            /* 0x007 utvt    */
+    target_ulong mtvt;            /* 0x307 mtvt    */
+    target_ulong mnxti;           /* 0x345 mnxti   */
+    target_ulong mintstatus_alt;  /* 0x346 mintstatus (alt mapping) */
+    target_ulong mintthresh;      /* 0x347 mintthresh */
+    target_ulong uintstatus;      /* 0xCB1 uintstatus */
+    target_ulong mintstatus;      /* 0xFB1 mintstatus */
+
+    /* Machine Hardware Configuration CSR range (0x7C0..0x7CF) used by the
+     * ESP32-C5 (mhcr/mhint/etc.).  Indexed by `csrno - 0x7C0`. */
+    uint32_t mhcr[16];
+
+    /* mexstatus (0x7E1) on the ESP32-C5.  Same address as PCMR_M on the
+     * older C3/C6/H2 cores, where it is a no-op stub; storing it here is
+     * harmless on those SOCs and lets the C5 round-trip it. */
+    uint32_t mexstatus;
 } EspRISCVCPU;
 
 /**
