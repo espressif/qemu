@@ -64,6 +64,7 @@
 #include "hw/misc/esp32s3_xts_aes.h"
 #include "hw/misc/esp32s3_pms.h"
 #include "hw/net/can/esp32s3_twai.h"
+#include "net/can_emu.h"
 
 #include "cpu_esp32s3.h"
 
@@ -318,6 +319,7 @@ struct Esp32s3MachineState {
 
     Esp32s3SocState esp32s3;
     DeviceState *flash_dev;
+    CanBusState *canbus;
 };
 #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
 
@@ -632,6 +634,11 @@ static void esp32s3_machine_init(MachineState *machine)
     // qdev_prop_set_chr(DEVICE(ss), "serial0", serial_hd(0));
     // qdev_prop_set_chr(DEVICE(ss), "serial1", serial_hd(1));
     // qdev_prop_set_chr(DEVICE(ss), "serial2", serial_hd(2));
+
+    if (ms->canbus) {
+        object_property_set_link(OBJECT(&ss->twai), "canbus",
+                                 OBJECT(ms->canbus), &error_abort);
+    }
 
     qdev_realize(DEVICE(ss), NULL, &error_fatal);
 
@@ -984,6 +991,11 @@ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
     mc->default_cpus = 2;
     mc->default_ram_size = 0;
     mc->fixup_ram_size = esp32s3_fixup_ram_size;
+
+    object_class_property_add_link(oc, "canbus", TYPE_CAN_BUS,
+                                   offsetof(Esp32s3MachineState, canbus),
+                                   object_property_allow_set_link,
+                                   OBJ_PROP_LINK_STRONG);
 }
 
 static const TypeInfo esp32s3_info = {
