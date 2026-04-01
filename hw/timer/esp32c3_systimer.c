@@ -24,7 +24,7 @@ static uint64_t esp32c3_systimer_read(void *opaque, hwaddr addr, unsigned int si
             /* On the C3, bit 27 is always 0, bit 25 is always high */
             r = class->parent_systimer_read(opaque, addr, size);
             r &= ~BIT(27);
-            r |= BIT(25);
+            r |=  BIT(25);
             break;
 
         case A_SYSTIMER_REAL_TARGET0_LO:
@@ -33,8 +33,8 @@ static uint64_t esp32c3_systimer_read(void *opaque, hwaddr addr, unsigned int si
         case A_SYSTIMER_REAL_TARGET1_HI:
         case A_SYSTIMER_REAL_TARGET2_LO:
         case A_SYSTIMER_REAL_TARGET2_HI:
-        /* These registers are not supported on the C3 hardware, do nothing! */
-        break;
+            /* These registers are not supported on the C3 hardware, do nothing! */
+            break;
 
         default:
             r = class->parent_systimer_read(opaque, addr, size);
@@ -55,6 +55,7 @@ static void esp32c3_systimer_class_init(ObjectClass *klass, void *data)
     esp->systimer_ops.read = esp32c3_systimer_read;
 }
 
+
 static const TypeInfo esp32c3_systimer_info = {
     .name = TYPE_ESP32C3_SYSTIMER,
     .parent = TYPE_ESP_SYSTIMER,
@@ -63,9 +64,11 @@ static const TypeInfo esp32c3_systimer_info = {
     .class_size = sizeof(ESP32C3SysTimerClass),
 };
 
+
 static void esp32c3_systimer_register_types(void)
 {
     type_register_static(&esp32c3_systimer_info);
 }
+
 
 type_init(esp32c3_systimer_register_types)
