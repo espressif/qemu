@@ -29,5 +29,4 @@ typedef struct ESP32C3SysTimerClass {
 
     /* Virtual attributes/methods overriden */
     uint64_t (*parent_systimer_read)(void *opaque, hwaddr addr, unsigned int size);
-    void (*parent_systimer_write)(void *opaque, hwaddr addr, uint64_t value, unsigned int size);
 } ESP32C3SysTimerClass;
