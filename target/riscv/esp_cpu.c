@@ -157,12 +157,17 @@ static void esp_cpu_irq_handler(void *opaque, int n, int level)
 {
     EspRISCVCPU *cpu = (EspRISCVCPU*) opaque;
 
-    /* Interrupt incoming if level is not 0, make sure we can receive interrupts */
-    if (level && esp_cpu_accept_interrupts(cpu)) {
-        cpu->irq_pending = true;
-        cpu->irq_cause = n;
-        qemu_irq_raise(cpu->parent_irq);
+    /* Record incoming interrupt regardless of current MSTATUS.MIE state.
+     * The parent RISC-V core will gate delivery based on CSR state; if we
+     * drop here, edge-like pulses can be lost while interrupts are masked.
+     */
+    if (!level || cpu->irq_pending) {
+        return;
     }
+
+    cpu->irq_pending = true;
+    cpu->irq_cause = n;
+    qemu_irq_raise(cpu->parent_irq);
 }
 
 

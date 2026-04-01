@@ -103,14 +103,22 @@ static void esp32c3_intmatrix_irq_handler(void *opaque, int n, int level)
     }
 
     /* If the new level is high, check that the priority is equal or bigger than the threshold.
-     * If that's the case, we can execute the interrupt, else, mark it as pending. */
+     * If that's the case, issue a pulse to the CPU line.
+     *
+     * NOTE: we also pulse when the CPU currently cannot accept interrupts (e.g. MSTATUS.MIE=0).
+     * The ESP CPU model will latch this pulse as pending and deliver it once interrupts are
+     * re-enabled. Without this, an interrupt asserted while MIE=0 can stay stuck in the matrix
+     * pending bitmap forever because there is no later edge to retrigger delivery. */
     if (level == 1) {
 #if INTMATRIX_DEBUG
         info_report("\x1b[31m[INTMATRIX] IRQ %d priority set to %d, CPU threshold %d \x1b[0m\n",
                     line, s->irq_prio[line], s->irq_thres);
 #endif
 
-        if (s->irq_prio[line] >= s->irq_thres && esp32c3_intmatrix_can_trigger(s)) {
+        if (s->irq_prio[line] >= s->irq_thres) {
+            if (!esp32c3_intmatrix_can_trigger(s)) {
+                SET_BIT(s->irq_pending, line);
+            }
             esp32c3_do_int(s, line);
         } else {
             SET_BIT(s->irq_pending, line);

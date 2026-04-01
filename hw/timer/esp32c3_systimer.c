@@ -44,15 +44,32 @@ static uint64_t esp32c3_systimer_read(void *opaque, hwaddr addr, unsigned int si
     return r;
 }
 
+static void esp32c3_systimer_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
+{
+    ESP32C3SysTimerClass *class = ESP32C3_SYSTIMER_GET_CLASS(opaque);
+    ESP32C3SysTimerState *s = ESP32C3_SYSTIMER(opaque);
+
+    class->parent_systimer_write(opaque, addr, value, size);
+
+    if (addr == A_SYSTIMER_INT_ENA) {
+        /* If interrupt enable is set after comparator programming, force a
+         * re-evaluation so "alarm already passed" cases are not missed.
+         */
+        class->parent_class.comparators_reprogram(&s->parent);
+    }
+}
+
 
 static void esp32c3_systimer_class_init(ObjectClass *klass, void *data)
 {
     ESP32C3SysTimerClass* esp32c3 = ESP32C3_SYSTIMER_CLASS(klass);
     ESPSysTimerClass* esp = ESP_SYSTIMER_CLASS(klass);
 
-    /* Override the register read method */
+    /* Override register read/write methods */
     esp32c3->parent_systimer_read = esp->systimer_ops.read;
+    esp32c3->parent_systimer_write = esp->systimer_ops.write;
     esp->systimer_ops.read = esp32c3_systimer_read;
+    esp->systimer_ops.write = esp32c3_systimer_write;
 }
 
 
