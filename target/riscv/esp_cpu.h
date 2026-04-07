@@ -63,6 +63,11 @@ typedef struct EspRISCVCPU {
     /* Espressif PMA (Physical Memory Attribute) extension. Set by SOC machine
      * code: the ESP32-C6 needs the PMA CSRs registered, the ESP32-C3 does not. */
     bool has_pma;
+    /* Backing storage for the Espressif PMA CSRs.  PMA enforcement is not
+     * modelled, but the values must round-trip through write/read so guest
+     * code that configures or probes them observes consistent state. */
+    uint32_t pmacfg[16];   /* pmacfg0..15  at 0xBC0..0xBCF */
+    uint32_t pmaaddr[16];  /* pmaaddr0..15 at 0xBD0..0xBDF */
     /* ESP32-C6 (and similar) repurpose the standard RISC-V mie CSR (0x304) as
      * a per-line external-interrupt enable bitmap (MXIE), with the four CLINT
      * enables (USIE, MSIE, UTIE, MTIE) at their classic positions and the

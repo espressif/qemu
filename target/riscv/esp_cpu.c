@@ -47,6 +47,13 @@
 #define ESP_CPU_CSR_GPIO_IN     0x804
 #define ESP_CPU_CSR_GPIO_OUT    0x805
 
+/* Espressif PMA (Physical Memory Attribute) CSR ranges.
+ * Only registered when the SOC has PMA (ESP32-C6 and later). */
+#define ESP_CPU_CSR_PMACFG0     0xBC0
+#define ESP_CPU_CSR_PMACFG15    0xBCF
+#define ESP_CPU_CSR_PMAADDR0    0xBD0
+#define ESP_CPU_CSR_PMAADDR15   0xBDF
+
 
 static RISCVException esp_cpu_csr_predicate(CPURISCVState *env, int csrno) {
     return RISCV_EXCP_NONE;
@@ -99,8 +106,16 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = esp_cpu_get_cycles(&s->cc_user);
     } else if (csrno == ESP_CPU_CSR_MCYCLE_M) {
         *ret_value = esp_cpu_get_cycles(&s->cc_machine);
+    } else if (csrno == CSR_MCYCLE) {
+        *ret_value = (target_ulong)esp_cpu_get_cycles(&s->cc_machine);
+    } else if (csrno == CSR_MCYCLEH) {
+        *ret_value = (target_ulong)(esp_cpu_get_cycles(&s->cc_machine) >> 32);
     } else if (csrno >= ESP_CPU_CSR_TSELECT && csrno <= ESP_CPU_CSR_TCONTROL) {
         /* Nothing special to do here */
+    } else if (csrno >= ESP_CPU_CSR_PMACFG0 && csrno <= ESP_CPU_CSR_PMACFG15) {
+        *ret_value = s->pmacfg[csrno - ESP_CPU_CSR_PMACFG0];
+    } else if (csrno >= ESP_CPU_CSR_PMAADDR0 && csrno <= ESP_CPU_CSR_PMAADDR15) {
+        *ret_value = s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0];
     } else {
         *ret_value = 0;
     }
@@ -117,6 +132,13 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
         s->cc_machine.cycles = new_value;
     } else if (csrno >= ESP_CPU_CSR_TSELECT && csrno <= ESP_CPU_CSR_TCONTROL) {
         /* Nothing special to do here */
+    } else if (csrno >= ESP_CPU_CSR_PMACFG0 && csrno <= ESP_CPU_CSR_PMACFG15) {
+        s->pmacfg[csrno - ESP_CPU_CSR_PMACFG0] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_PMAADDR0 && csrno <= ESP_CPU_CSR_PMAADDR15) {
+        /* On C6/H2 all 32 bits are writable (4-byte granularity).  C5 has
+         * 128-byte granularity (bottom bits hardwired 0); enforce per-SOC
+         * masking here if/when this code is exercised on a CLIC SOC. */
+        s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0] = (uint32_t)new_value;
     }
 
     return RISCV_EXCP_NONE;
@@ -267,9 +289,6 @@ static bool esp_cpu_has_work(CPUState *cs)
  */
 static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
-    /* We could re-implement the whole interrupt process from here.
-     * The simplest solution however is to call the parent's implementation and
-     * replace the most important part for us: the mcause. */
     EspRISCVCPU *cpu = ESP_CPU(cs);
     EspRISCVCPUClass *klass = ESP_CPU_GET_CLASS(cpu);
     const uint32_t cause = esp_cpu_select_irq_cause(cpu);
@@ -311,10 +330,7 @@ static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     if (accepted) {
         const bool vectored = (env->mtvec & 3) == 1;
 
-        /* Update the mcause and the relevant PC */
         env->mcause = RISCV_EXCP_INT_FLAG | cause;
-
-        /* Recalculate the PC thanks to the cause */
         env->pc = (env->mtvec >> 2 << 2) + (vectored ? cause * 4 : 0);
     }
 
@@ -336,6 +352,8 @@ static void esp_cpu_reset(void *opaque)
     EspRISCVCPU *cpu = opaque;
     cpu->irq_lines = 0;
     cpu->mie_enabled = 0;
+    memset(cpu->pmacfg, 0, sizeof(cpu->pmacfg));
+    memset(cpu->pmaaddr, 0, sizeof(cpu->pmaaddr));
     qemu_irq_lower(cpu->parent_irq);
     cpu_reset(CPU(cpu));
 }
@@ -359,10 +377,9 @@ static void esp_cpu_realize(DeviceState *dev, Error **errp)
      * ESP32-C6 (and later) IDF startup code to configure memory region access
      * permissions.  Only register them when the SOC is known to support PMA,
      * since the ESP32-C3 also uses this `esp_cpu` implementation but doesn't
-     * implement PMA in hardware.
-     * pmacfg0-15 at 0xBC0-0xBCF, pmaaddr0-15 at 0xBD0-0xBDF */
+     * implement PMA in hardware. */
     if (espcpu->has_pma) {
-        for (int i = 0xBC0; i <= 0xBDF; i++) {
+        for (int i = ESP_CPU_CSR_PMACFG0; i <= ESP_CPU_CSR_PMAADDR15; i++) {
             riscv_set_csr_ops(i, &esp_cpu_csr_ops);
         }
     }
@@ -451,6 +468,16 @@ static void esp_cpu_init(Object *obj)
     riscv_set_csr_ops(ESP_CPU_CSR_PCER_U, &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_PCMR_U, &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_MCYCLE_U, &esp_cpu_csr_ops);
+
+    /*
+     * Override the standard RISC-V mcycle/mcycleh CSRs.  The default PMU
+     * handler returns raw icount (instruction count) which does not match
+     * the target CPU frequency.  Route through esp_cpu_get_cycles so that
+     * ROM functions like ets_delay_us see a cycle rate that matches the
+     * configured clock (e.g. 96 MHz for ESP32-H2).
+     */
+    riscv_set_csr_ops(CSR_MCYCLE, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(CSR_MCYCLEH, &esp_cpu_csr_ops);
 
     s->cc_machine = (ESPCPUCycleCounter) {
         .divider = 6250,   /* 6.25ns per instruction at 160MHz. */
