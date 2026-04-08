@@ -135,7 +135,7 @@ static void psram_write_data(SsiPsramState *s, off_t offset, uint8_t byte)
     uint8_t* ptr = (uint8_t*) memory_region_get_ram_ptr(&s->data_mr);
     const uint32_t size_bytes = s->size_mbytes * 1024 * 1024;
     off_t destination = s->addr + offset;
-    if (destination < size_bytes) {
+    if (destination >= 0 && destination < size_bytes) {
         ptr[destination] = byte;
     }
 }
@@ -150,7 +150,7 @@ static uint8_t psram_read_data(SsiPsramState *s, off_t offset)
     uint8_t* ptr = (uint8_t*) memory_region_get_ram_ptr(&s->data_mr);
     const uint32_t size_bytes = s->size_mbytes * 1024 * 1024;
     off_t destination = s->addr + offset;
-    if (destination < size_bytes) {
+    if (destination >= 0 && destination < size_bytes) {
         return ptr[destination];
     }
     return 0;
