@@ -1,0 +1,25 @@
+/*
+ * ESP32-C61 System Timer
+ *
+ * Copyright (c) 2026 Espressif Systems (Shanghai) Co. Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 or
+ * (at your option) any later version.
+ */
+#pragma once
+
+#include "hw/timer/esp32c3_systimer.h"
+
+#define TYPE_ESP32C61_SYSTIMER           "esp32c61.systimer"
+#define ESP32C61_SYSTIMER(obj)           OBJECT_CHECK(ESP32C61SysTimerState, (obj), TYPE_ESP32C61_SYSTIMER)
+#define ESP32C61_SYSTIMER_GET_CLASS(obj) OBJECT_GET_CLASS(ESP32C61SysTimerClass, obj, TYPE_ESP32C61_SYSTIMER)
+#define ESP32C61_SYSTIMER_CLASS(klass)   OBJECT_CLASS_CHECK(ESP32C61SysTimerClass, (klass), TYPE_ESP32C61_SYSTIMER)
+
+typedef struct ESP32C61SysTimerState {
+    ESP32C3SysTimerState parent;
+} ESP32C61SysTimerState;
+
+typedef struct ESP32C61SysTimerClass {
+    ESP32C3SysTimerClass parent_class;
+} ESP32C61SysTimerClass;

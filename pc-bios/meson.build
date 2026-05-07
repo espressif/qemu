@@ -64,6 +64,7 @@ blobs = [
   'esp32-v3-rom-app.bin',
   'esp32c3-rom.bin',
   'esp32c5-rom.bin',
+  'esp32c61-rom.bin',
   'esp32c6-rom.bin',
   'esp32h2-rom.bin',
   'esp32s3_rev0_rom.bin',

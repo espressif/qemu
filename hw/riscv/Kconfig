@@ -134,6 +134,13 @@ config RISCV_ESP32C5
     select OPENCORES_ETH
     select UNIMP
 
+config RISCV_ESP32C61
+    bool
+    default y
+    depends on RISCV32
+    select OPENCORES_ETH
+    select UNIMP
+
 config RISCV_ESP32H2
     bool
     default y
