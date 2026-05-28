@@ -216,11 +216,19 @@ static void esp32s3_soc_reset(DeviceState *dev)
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
         remove_cpu_watchpoints(&s->cpu[0]);
         cpu_reset(CPU(&s->cpu[0]));
+        /*
+         * Silicon resets CPENABLE to 0xff, on either CPU and for any reset.
+         * The generic Xtensa CPU reset leaves it at 0 in system mode, and a
+         * guest that saves the FP registers without enabling them first then
+         * takes Cp0Disabled in its exception handler, over and over.
+         */
+        s->cpu[0].env.sregs[CPENABLE] = 0xff;
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_APPCPU && (ESP32S3_CPU_COUNT > 1)) {
         xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
         remove_cpu_watchpoints(&s->cpu[1]);
         cpu_reset(CPU(&s->cpu[1]));
+        s->cpu[1].env.sregs[CPENABLE] = 0xff;
     }
     s->requested_reset = 0;
 }
