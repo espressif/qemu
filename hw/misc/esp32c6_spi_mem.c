@@ -56,7 +56,7 @@ static void esp32c6_spi_mem_load_page(ESP32C6SpiMemState *s, uint32_t entry_inde
     if (virtual_offset + page_size > memory_region_size(s->dcache_mr)) {
         return;
     }
-    if (mmu_val & C6_MMU_VALID_BIT) {
+    if (mmu_val != 0) {
         uint32_t page_number = mmu_val & C6_MMU_PAGE_NUM_MASK;
         uint32_t physical_offset = page_number * page_size;
 #if SPI_MEM_DEBUG
@@ -79,8 +79,6 @@ static uint64_t esp32c6_spi_mem_read(void *opaque, hwaddr addr, unsigned int siz
 
     switch (addr) {
     case A_SPI_MEM_TIMING_CALI:
-        /* IDF/ROM polls CALI_DONE; we don't model the calibration so report
-         * it as immediately complete. */
         return R_SPI_MEM_TIMING_CALI_CALI_DONE_MASK;
 
     case A_SPI_MEM_MMU_ITEM_CONTENT:
