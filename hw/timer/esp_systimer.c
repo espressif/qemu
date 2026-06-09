@@ -22,7 +22,15 @@
 #include "hw/timer/esp_systimer.h"
 
 
-#define TICKS_TO_NS(ticks) (((ticks) / ESP_SYSTIMER_CNT_PER_US) * 1000)
+/*
+ * Convert systimer ticks to nanoseconds using ceiling division so the QEMU
+ * virtual timer fires at or *after* the point where the counter has actually
+ * reached the alarm value.  Floor division would fire (ticks % 16) * 62.5 ns
+ * too early, causing the ISR to see a counter below the alarm and skip
+ * dispatch.
+ */
+#define TICKS_TO_NS(ticks)  \
+    (((uint64_t)(ticks) * 1000 + (ESP_SYSTIMER_CNT_PER_US) - 1) / (ESP_SYSTIMER_CNT_PER_US))
 
 #define SYSTIMER_DEBUG      0
 #define SYSTIMER_WARNING    0
@@ -43,7 +51,6 @@ static void esp_systimer_set_irqs(ESPSysTimerState *s)
 {
     for (int i = 0; i < ESP_SYSTIMER_COMP_COUNT; i++) {
         ESPSysTimerComp* comparator = &s->comparators[i];
-        /* Optimize a bit by not calling the interrupt module if the state didn't change */
         const int new_level = comparator->raw_st && comparator->int_enabled;
         if (new_level != comparator->cur_irq_level) {
             comparator->cur_irq_level = new_level;
@@ -133,8 +140,15 @@ static void esp_systimer_comparator_reprogram(ESPSysTimerComp* comparator)
     const bool overflow_valid = alarm < count_val && count_val - alarm >= ((1ULL << 51) - 1);
 
     if (!comparator->period_mode && !overflow_valid && alarm <= count_val) {
-        timer_del(&comparator->qtimer);
-        esp_systimer_notify(comparator);
+        /*
+         * The alarm value is already behind the counter.  Defer slightly so
+         * the guest firmware can finish any in-progress multi-register write
+         * sequence before the ISR runs.
+         */
+        const int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        const int64_t defer_ns = 10000;
+        comparator->expire_time = now + defer_ns;
+        timer_mod_ns(&comparator->qtimer, now + defer_ns);
         return;
     }
 
@@ -154,10 +168,12 @@ static void esp_systimer_comparator_reprogram(ESPSysTimerComp* comparator)
     const int64_t target_ns = now + TICKS_TO_NS(diff);
     comparator->expire_time = target_ns;
 #if SYSTIMER_DEBUG
-    int comp_idx = comparator - s->comparators;
-    info_report("[SYSTIMER] Reprogram comp%d: counter=%lu alarm=%lu diff=%lu target_ns=%ld (now=%ld, delay=%ld ns)",
-                comp_idx, (unsigned long)count_val, (unsigned long)comparator->value,
-                (unsigned long)diff, (long)target_ns, (long)now, (long)(target_ns - now));
+    {
+        int comp_idx = comparator - s->comparators;
+        info_report("[SYSTIMER] Reprogram comp%d: counter=%lu alarm=%lu diff=%lu target_ns=%ld (now=%ld, delay=%ld ns)",
+                    comp_idx, (unsigned long)count_val, (unsigned long)comparator->value,
+                    (unsigned long)diff, (long)target_ns, (long)now, (long)(target_ns - now));
+    }
 #endif
     timer_mod_ns(&comparator->qtimer, target_ns);
 }
@@ -357,12 +373,15 @@ static void esp_systimer_load_counter(ESPSysTimerState *s, uint32_t index)
 static void esp_systimer_comparator_conf(ESPSysTimerComp* comparator, uint64_t value)
 {
     uint32_t old_counter = comparator->counter;
+    const bool old_period_mode = comparator->period_mode;
     comparator->period_mode = (value & R_SYSTIMER_TARGET0_CONF_PERIOD_MODE_MASK) ? 1 : 0;
     comparator->counter = (value & R_SYSTIMER_TARGET0_CONF_TIMER_UNIT_SEL_MASK) ? 1 : 0;
     comparator->period_toload = value & R_SYSTIMER_TARGET0_CONF_PERIOD_MASK;
 
-    /* If the comparator is enabled while the counter to compare it to changed, reload the timer! */
-    if (comparator->enabled && old_counter != comparator->counter) {
+    /* If the comparator is enabled while the counter to compare it to changed, reload the timer!
+     * Do the same when period mode is turned on: a one-shot alarm may have expired already. */
+    if (comparator->enabled && (old_counter != comparator->counter ||
+                                (!old_period_mode && comparator->period_mode))) {
         esp_systimer_comparator_reprogram(comparator);
     }
 }
