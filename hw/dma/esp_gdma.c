@@ -290,6 +290,32 @@ bool esp_gdma_get_channel_periph(ESPGdmaState *s, GdmaPeripheral periph, int dir
 
 
 /**
+ * Check the header file for more info about this function
+ */
+bool esp_gdma_peek_length(ESPGdmaState *s, uint32_t chan, uint32_t *len)
+{
+    if (s == NULL || len == NULL || chan >= ESP_GDMA_GET_CLASS(s)->m_channel_count) {
+        return false;
+    }
+
+    DmaConfigState* state = &s->ch_conf[ESP_GDMA_OUT_IDX][chan];
+
+    /* Compute the head descriptor guest address the same way esp_gdma_read_channel() does,
+     * but without mutating any state register. */
+    const uint32_t link = state->link & R_GDMA_OUT_LINK_ADDR_MASK;
+    const uint32_t out_addr = ((ESP_GDMA_RAM_ADDR >> 20) << 20) | FIELD_EX32(link, GDMA_OUT_LINK, ADDR);
+
+    GdmaLinkedList head;
+    if (!esp_gdma_read_descr(s, out_addr, &head)) {
+        return false;
+    }
+
+    *len = head.config.length;
+    return true;
+}
+
+
+/**
  * @brief Read data from guest RAM pointed by the linked list configured in the given DmaConfigState index.
  *        `size` bytes will be read and stored in `buffer`.
  */
@@ -366,6 +392,12 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
 
             const bool eof_bit = out_list.config.suc_eof;
 
+            /* Guest address of the descriptor that has just been completed. When it
+             * carries the EOF flag, the firmware's TX EOF ISR reads it back through the
+             * GDMA_OUT_EOF_DES_ADDR register (mapped to suc_eof_desc_addr for the OUT
+             * direction), so capture it before advancing to the next node. */
+            const uint32_t eof_desc_addr = out_addr;
+
             /* Retrieve the next node  while updating the virtual guest address */
             out_addr = out_list.next_addr;
             valid = esp_gdma_next_list_node(s, chan, ESP_GDMA_OUT_IDX, &out_list);
@@ -379,6 +411,9 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
             /* If the EOF bit was set, the real controller doesn't stop the transfer, it simply
              * sets the status accordingly (and generates an interrupt if enabled) */
             if (eof_bit) {
+                /* Expose the completed descriptor's address via the OUT EOF descriptor
+                 * address register so the TX EOF ISR can recover the finished buffer. */
+                state->suc_eof_desc_addr = eof_desc_addr;
                 esp_gdma_set_status(&state->int_state, R_GDMA_INTERRUPT_OUT_EOF_MASK |
                                                        R_GDMA_INTERRUPT_OUT_TOTAL_EOF_MASK);
             }
