@@ -88,6 +88,12 @@ typedef struct ESP32C3IntMatrixState {
 
     /* Output IRQ used to notify the CPU, indexed from 1 to 31, so allocate one more */
     qemu_irq out_irqs[ESP32C3_CPU_INT_COUNT + 1];
+
+    /* Bottom-half used to deliver a remap-while-asserted interrupt at a clean
+     * execution point (next main-loop iteration) instead of synchronously from
+     * inside the guest's write to the interrupt-map register. See the remap
+     * handling in esp32c3_intmatrix_write(). */
+    QEMUBH *reeval_bh;
 } ESP32C3IntMatrixState;
 
 _Static_assert(sizeof(uint64_t) * 8 >= ESP32C3_INT_MATRIX_INPUTS,

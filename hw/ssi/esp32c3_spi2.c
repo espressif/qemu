@@ -20,10 +20,10 @@
 #include "hw/ssi/ssi.h"
 #include "hw/ssi/esp32c3_spi2.h"
 #include "qemu/error-report.h"
+#include "qemu/timer.h"
 
 #define SPI2_DEBUG      0
 #define SPI2_WARNING    1
-
 
 static void esp32c3_spi2_update_irq(ESP32C3Spi2State *s)
 {
@@ -51,6 +51,31 @@ static void esp32c3_spi2_update_irq(ESP32C3Spi2State *s)
     } else {
         qemu_irq_lower(s->irq);
     }
+}
+
+/* Virtual-time delay between a SPI_USR trigger and trans_done. Just needs to be
+ * non-zero so completion is signalled from the timer callback (a clean async
+ * context) rather than synchronously from inside the triggering MMIO write. */
+#define ESP32C3_SPI2_COMPLETION_NS 1000
+
+/* Timer callback: the transfer has "completed" — set TRANS_DONE and (if enabled)
+ * raise the completion interrupt. Running here, rather than inline in the CMD.USR
+ * write, ensures the IRQ latches into the CPU even for interrupt-driven transfers
+ * whose trigger executes from within the guest's SPI ISR. */
+static void esp32c3_spi2_completion_cb(void *opaque)
+{
+    ESP32C3Spi2State *s = opaque;
+    s->dma_int_raw |= R_GPSPI2_DMA_INT_RAW_TRANS_DONE_MASK;
+    esp32c3_spi2_update_irq(s);
+}
+
+/* Mark the just-triggered transfer as finished and schedule its async completion.
+ * The data movement (SSI/GDMA) has already happened synchronously by this point. */
+static void esp32c3_spi2_finish_transaction(ESP32C3Spi2State *s)
+{
+    s->cmd &= ~R_GPSPI2_CMD_USR_MASK;
+    timer_mod(&s->completion_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ESP32C3_SPI2_COMPLETION_NS);
 }
 
 
@@ -335,14 +360,8 @@ static void esp32c3_spi2_begin_transaction(ESP32C3Spi2State *s)
     }
 #endif
 
-    /* Clear the USR bit in CMD to indicate transaction complete */
-    s->cmd &= ~R_GPSPI2_CMD_USR_MASK;
-
-    /* Set TRANS_DONE in DMA_INT_RAW */
-    s->dma_int_raw |= R_GPSPI2_DMA_INT_RAW_TRANS_DONE_MASK;
-
-    /* Update interrupt status and possibly raise IRQ */
-    esp32c3_spi2_update_irq(s);
+    /* Finish the transaction: clear USR now, signal completion asynchronously. */
+    esp32c3_spi2_finish_transaction(s);
 }
 
 
@@ -355,32 +374,25 @@ static void esp32c3_spi2_begin_transaction(ESP32C3Spi2State *s)
  */
 static bool esp32c3_spi2_use_dma_mode(ESP32C3Spi2State *s)
 {
-    /* TEMPORARY: Force CPU mode for QEMU SD card testing.
-     * The GDMA integration needs more work to properly support SPI DMA.
-     * For now, using CPU mode (W0-W15 data registers) works correctly. */
-    (void)s;
-    return false;
-
-#if 0  /* Disabled until GDMA integration is complete */
-    uint32_t dummy;
-
-    fprintf(stderr, "[SPI2] use_dma_mode: s->gdma=%p\n", (void*)s->gdma);
-    fflush(stderr);
-
-    /* No GDMA controller linked, must use CPU mode */
+    /* No GDMA controller linked: must use the CPU (W-register) path. */
     if (s->gdma == NULL) {
-        fprintf(stderr, "[SPI2] use_dma_mode: GDMA is NULL, using CPU mode\n");
-        fflush(stderr);
         return false;
     }
 
-    /* Check if any GDMA channel is configured for SPI2 */
-    bool have_out = esp_gdma_get_channel_periph(s->gdma, GDMA_SPI2, ESP_GDMA_OUT_IDX, &dummy);
-    bool have_in = esp_gdma_get_channel_periph(s->gdma, GDMA_SPI2, ESP_GDMA_IN_IDX, &dummy);
-
-    /* Use DMA mode if at least one channel is configured */
-    return have_out || have_in;
-#endif
+    /* Use DMA for a transaction iff the SPI2 GDMA channel is actually *armed* for
+     * this transfer (the driver called gdma_start(), so the channel's LINK has
+     * START set). The dma_conf DMA_RX/TX_ENA bits alone are NOT a reliable
+     * discriminator: the SD driver leaves them set on the DMA-capable bus but then
+     * issues tiny SPI_TRANS_USE_RXDATA transfers (e.g. poll_busy's 1-byte card-ready
+     * polls) that read their result from the W0 register, with no GDMA descriptor
+     * armed. Routing those through the DMA path would deposit the received byte in
+     * GDMA memory and leave W0 zero, so poll_busy would never see the card go ready
+     * and would spin until timeout — tens of thousands of single-byte transfers per
+     * command, saturating the core and starving the I2S ring (the audio stutter).
+     * Gating on an armed GDMA transfer sends real data blocks through DMA and these
+     * W-register polls through the CPU path, as on real hardware. */
+    return FIELD_EX32(s->dma_conf, GPSPI2_DMA_CONF, DMA_RX_ENA) ||
+           FIELD_EX32(s->dma_conf, GPSPI2_DMA_CONF, DMA_TX_ENA);
 }
 
 
@@ -409,8 +421,9 @@ static void esp32c3_spi2_dma_transaction(ESP32C3Spi2State *s)
     uint32_t data_len = (data_bitlen + 1) / 8;
 
 #if SPI2_DEBUG
-    info_report("[SPI2] DMA TRANSACTION: data_len=%u have_out=%d have_in=%d",
-                data_len, have_out, have_in);
+    info_report("[SPI2] DMA TRANSACTION: data_len=%u have_out=%d (idx=%u) have_in=%d (idx=%u) "
+                "user=0x%08x ms_dlen=0x%x",
+                data_len, have_out, gdma_out_idx, have_in, gdma_in_idx, s->user, s->ms_dlen);
 #endif
 
     /* Assert CS low */
@@ -486,10 +499,14 @@ static void esp32c3_spi2_dma_transaction(ESP32C3Spi2State *s)
                 memset(buffer, 0xFF, data_len);
             }
 #if SPI2_DEBUG
-            info_report("[SPI2] DMA TX: read %u bytes from GDMA, first: %02x %02x %02x %02x",
-                        data_len,
-                        data_len > 0 ? buffer[0] : 0, data_len > 1 ? buffer[1] : 0,
-                        data_len > 2 ? buffer[2] : 0, data_len > 3 ? buffer[3] : 0);
+            {
+                char hex[3 * 32 + 1] = {0};
+                uint32_t n = data_len < 32 ? data_len : 32;
+                for (uint32_t k = 0; k < n; k++) {
+                    snprintf(hex + 3 * k, 4, "%02x ", buffer[k]);
+                }
+                info_report("[SPI2] DMA TX: %u bytes: %s", data_len, hex);
+            }
 #endif
         } else {
             /* Fill with 0xFF for RX-only transfers */
@@ -530,10 +547,8 @@ static void esp32c3_spi2_dma_transaction(ESP32C3Spi2State *s)
     }
 
 complete:
-    /* Clear USR bit and set TRANS_DONE */
-    s->cmd &= ~R_GPSPI2_CMD_USR_MASK;
-    s->dma_int_raw |= R_GPSPI2_DMA_INT_RAW_TRANS_DONE_MASK;
-    esp32c3_spi2_update_irq(s);
+    /* Finish the transaction: clear USR now, signal completion asynchronously. */
+    esp32c3_spi2_finish_transaction(s);
 }
 
 
@@ -570,8 +585,16 @@ static void esp32c3_spi2_write(void *opaque, hwaddr addr,
 #endif
                 /* Check if DMA mode should be used */
                 if (esp32c3_spi2_use_dma_mode(s)) {
+#if SPI2_DEBUG
+                    info_report("[SPI2] -> DMA path (dma_conf=0x%x int_ena=0x%x)",
+                                s->dma_conf, s->dma_int_ena);
+#endif
                     esp32c3_spi2_dma_transaction(s);
                 } else {
+#if SPI2_DEBUG
+                    info_report("[SPI2] -> CPU path (dma_conf=0x%x int_ena=0x%x)",
+                                s->dma_conf, s->dma_int_ena);
+#endif
                     esp32c3_spi2_begin_transaction(s);
                 }
             }
@@ -601,8 +624,9 @@ static void esp32c3_spi2_write(void *opaque, hwaddr addr,
             s->misc = wvalue;
             break;
         case A_GPSPI2_DMA_CONF:
-            /* Accept DMA configuration writes; handle AFIFO reset bits as write-1-to-clear.
-             * We don't actually implement DMA, but the SPI master driver configures this. */
+            /* Store DMA config; the AFIFO reset bits are write-1-pulse, so mask them
+             * out of the retained value. The DMA_RX_ENA/DMA_TX_ENA bits are kept and
+             * drive esp32c3_spi2_use_dma_mode(). */
             s->dma_conf = wvalue & ~(R_GPSPI2_DMA_CONF_RX_AFIFO_RST_MASK |
                                      R_GPSPI2_DMA_CONF_BUF_AFIFO_RST_MASK |
                                      R_GPSPI2_DMA_CONF_DMA_AFIFO_RST_MASK);
@@ -738,6 +762,9 @@ static void esp32c3_spi2_init(Object *obj)
                           TYPE_ESP32C3_SPI2, ESP32C3_SPI2_IO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+
+    timer_init_ns(&s->completion_timer, QEMU_CLOCK_VIRTUAL,
+                  esp32c3_spi2_completion_cb, s);
 
     esp32c3_spi2_reset_hold(obj, RESET_TYPE_COLD);
 

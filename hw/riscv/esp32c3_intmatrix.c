@@ -11,6 +11,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/queue.h"
+#include "qemu/main-loop.h"
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
@@ -176,6 +177,19 @@ static void esp32c3_intmatrix_core_prio_changed(ESP32C3IntMatrixState* s, uint64
 
 
 /**
+ * Bottom-half: deferred re-evaluation/delivery of pending interrupts at a clean
+ * execution point (next main-loop iteration). Scheduled from a remap-while-asserted
+ * so the CPU takes the routed interrupt cleanly, instead of synchronously re-entering
+ * an ISR from inside the guest's own write to the interrupt-map register.
+ */
+static void esp32c3_intmatrix_reeval_bh(void *opaque)
+{
+    ESP32C3IntMatrixState *s = opaque;
+    esp32c3_intmatrix_core_prio_changed(s, s->irq_thres);
+}
+
+
+/**
  * This function is called when the status (enabled/disabled) of a line has just been changed.
  * It will update the pending IRQ map.
  */
@@ -252,7 +266,44 @@ static void esp32c3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
 
     if (index < ESP32C3_INT_MATRIX_INPUTS) {
 
+        const int old_line = s->irq_map[index];
         s->irq_map[index] = (value & 0x1f);
+
+        /* When a source is remapped to a *different* CPU line, the OLD line may
+         * no longer have any asserted source. On real hardware a CPU line's
+         * level is the OR of the levels of all sources mapped to it, so once
+         * this source leaves, the old line de-asserts. Recompute the old line
+         * and clear a now-stale pending bit. Without this, an ISR that disables
+         * itself by remapping its source to a parked/disabled line — exactly
+         * what the SPI bus-lock's bg_disable()/esp_intr_disable() does at ISR
+         * entry — leaves the old line permanently pending, so it is re-delivered
+         * the instant the handler returns and the ISR re-fires forever. */
+        if (old_line != s->irq_map[index] && old_line != 0 &&
+            esp32c3_get_output_line_level(s, old_line) == 0) {
+            CLEAR_BIT(s->irq_pending, old_line);
+        }
+
+        /* Re-evaluate routing on a remap. The source's asserted level is unchanged,
+         * but it now targets a (possibly different) CPU line. On real hardware the
+         * level-triggered matrix immediately routes the current level to the new
+         * line; without re-evaluating here, a source that is asserted *while* being
+         * remapped onto an enabled line would never reach the CPU. This is exactly
+         * what the SPI master does when it switches a completed/asserted transfer
+         * from polled to interrupt-driven completion (remapping ETS_SPI2 onto an
+         * active line while trans_done is still high) — without this it deadlocks. */
+        {
+            const int new_line = s->irq_map[index];
+            if ((s->irq_levels & BIT(index)) && (s->irq_enabled & BIT(new_line))) {
+                /* Mark the line pending and deliver it from a bottom-half on the
+                 * next main-loop iteration. Delivering it synchronously here would
+                 * pulse the CPU line from within the guest's interrupt-config write
+                 * (e.g. esp_intr_enable's matrix-register store), re-entering an ISR
+                 * at an unsafe point and leaving the CPU interrupt threshold stuck
+                 * elevated. The BH re-evaluates once we're back at a clean point. */
+                SET_BIT(s->irq_pending, new_line);
+                qemu_bh_schedule(s->reeval_bh);
+            }
+        }
 #if INTMATRIX_DEBUG
         info_report("\x1b[31m[INTMATRIX] Mapping interrupt %d to CPU line %d\x1b[0m\n", index, s->irq_map[index]);
 #endif
@@ -354,6 +405,9 @@ static void esp32c3_intmatrix_realize(DeviceState *dev, Error **errp)
     EspRISCVCPUClass *cpu_klass = ESP_CPU_GET_CLASS(cpu);
 
     esp32c3_intmatrix_reset_hold(OBJECT(dev), RESET_TYPE_COLD);
+
+    /* Bottom-half for deferred (safe-point) delivery of remap-while-asserted IRQs */
+    s->reeval_bh = qemu_bh_new(esp32c3_intmatrix_reeval_bh, s);
 
     /* Register MIE callback */
     assert(cpu);

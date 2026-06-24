@@ -15,6 +15,7 @@
 #include "hw/ssi/ssi.h"
 #include "hw/registerfields.h"
 #include "hw/dma/esp_gdma.h"
+#include "qemu/timer.h"
 
 #define TYPE_ESP32C3_SPI2 "esp32c3-spi2"
 #define ESP32C3_SPI2(obj) OBJECT_CHECK(ESP32C3Spi2State, (obj), TYPE_ESP32C3_SPI2)
@@ -63,11 +64,16 @@ REG32(GPSPI2_MS_DLEN, 0x1C)
 REG32(GPSPI2_MISC, 0x20)
     FIELD(GPSPI2_MISC, CS_KEEP_ACTIVE, 10, 1)
 
-/* Register addresses from ESP32-C3 Technical Reference Manual */
+/* Register addresses from ESP32-C3 Technical Reference Manual.
+ * Bit positions per the C3 TRM (SPI_DMA_CONF): DMA_RX_ENA=27, DMA_TX_ENA=28,
+ * RX_AFIFO_RST=29, BUF_AFIFO_RST=30, DMA_AFIFO_RST=31. (The earlier header had
+ * the AFIFO reset bits one position too low, colliding with DMA_TX_ENA.) */
 REG32(GPSPI2_DMA_CONF, 0x30)
-    FIELD(GPSPI2_DMA_CONF, RX_AFIFO_RST, 30, 1)
-    FIELD(GPSPI2_DMA_CONF, BUF_AFIFO_RST, 29, 1)
-    FIELD(GPSPI2_DMA_CONF, DMA_AFIFO_RST, 28, 1)
+    FIELD(GPSPI2_DMA_CONF, DMA_RX_ENA, 27, 1)
+    FIELD(GPSPI2_DMA_CONF, DMA_TX_ENA, 28, 1)
+    FIELD(GPSPI2_DMA_CONF, RX_AFIFO_RST, 29, 1)
+    FIELD(GPSPI2_DMA_CONF, BUF_AFIFO_RST, 30, 1)
+    FIELD(GPSPI2_DMA_CONF, DMA_AFIFO_RST, 31, 1)
 
 REG32(GPSPI2_DMA_INT_ENA, 0x34)
     FIELD(GPSPI2_DMA_INT_ENA, TRANS_DONE, 12, 1)
@@ -131,6 +137,14 @@ typedef struct ESP32C3Spi2State {
 
     /* GDMA controller for DMA transfers - must be set by machine before realize */
     ESPGdmaState *gdma;
+
+    /* Transaction completion is signalled asynchronously (a short time after the
+     * SPI_USR trigger), mirroring real hardware: a transfer takes time, so
+     * trans_done fires later. Raising the completion IRQ synchronously from inside
+     * the CMD.USR MMIO write breaks the interrupt-driven path, because that write
+     * can execute from within the guest's own SPI ISR and the level-IRQ wouldn't
+     * latch into the CPU. The timer defers trans_done + IRQ to a clean context. */
+    QEMUTimer completion_timer;
 } ESP32C3Spi2State;
 
 #endif /* ESP32C3_SPI2_H */

@@ -131,7 +131,7 @@ static void esp_gdma_write_int_state(DmaIntState* state, DmaRegister reg, uint32
 static void esp_gdma_reset_fifo(DmaConfigState* s)
 {
 #if GDMA_DEBUG
-    info_report("Resetting FIFO for chan %d, direction: %d", chan, in_out);
+    info_report("Resetting GDMA FIFO");
 #endif
     /* Set the FIFO empty bit to 1, full bit to 0, and number of bytes of data to 0 */
     s->status = R_GDMA_INFIFO_STATUS_FIFO_EMPTY_MASK;
@@ -273,13 +273,20 @@ bool esp_gdma_get_channel_periph(ESPGdmaState *s, GdmaPeripheral periph, int dir
         return false;
     }
 
-    /* Check all the channels of the GDMA */
+    /* Find the channel configured for this peripheral, in this direction.
+     *
+     * Match strictly on PERI_SEL == periph AND a non-zero descriptor link address.
+     * The link-address requirement is essential: GDMA_SPI2 == 0, which is also the
+     * default/reset value of an *unconfigured* channel's PERI_SEL, so a plain
+     * PERI_SEL match would alias unused channels. Only a channel the firmware has
+     * actually armed (gdma_start set a descriptor link) has a non-zero ADDR. This
+     * also keeps concurrent users distinct, e.g. SPI2 (SD) vs I2S (audio): when SPI2
+     * allocates TX on one channel and RX on another, querying the IN direction must
+     * skip the TX channel's unused (link==0) IN side and find the real RX channel.
+     * (The IN/OUT LINK registers share the same ADDR field layout.) */
     for (int i = 0; i < class->m_channel_count; i++) {
-        /* IN/OUT PERI registers have the same organization, can use any macro.
-         * Look for the channel that was configured with the given peripheral. It must be marked as "started" too */
-        if ( FIELD_EX32(s->ch_conf[dir][i].peripheral, GDMA_PERI_SEL, PERI_SEL) == periph ||
-             FIELD_EX32(s->ch_conf[dir][i].link, GDMA_OUT_LINK, START)) {
-
+        if (FIELD_EX32(s->ch_conf[dir][i].peripheral, GDMA_PERI_SEL, PERI_SEL) == periph &&
+            FIELD_EX32(s->ch_conf[dir][i].link, GDMA_OUT_LINK, ADDR) != 0) {
             *chan = i;
             return true;
         }
@@ -331,6 +338,16 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
 
     /* Get the guest DRAM address */
     uint32_t out_addr = ((ESP_GDMA_RAM_ADDR >> 20) << 20) | FIELD_EX32(state->link, GDMA_OUT_LINK, ADDR);
+
+#if GDMA_DEBUG
+    {
+        GdmaLinkedList head;
+        if (esp_gdma_read_descr(s, out_addr, &head)) {
+            info_report("[GDMA] read_channel chan=%u size=%u desc@0x%08x buf@0x%08x len=%u",
+                        chan, size, out_addr, head.buf_addr, head.config.length);
+        }
+    }
+#endif
 
     /* Boolean to mark whether we need to check the owner for in and out buffers */
     const bool owner_check_out = FIELD_EX32(state->conf1, GDMA_OUT_CONF1, CHECK_OWNER);

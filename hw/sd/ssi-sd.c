@@ -107,6 +107,23 @@ static uint32_t ssi_sd_transfer(SSIPeripheral *dev, uint32_t val)
     uint8_t longresp[16];
 
     /*
+     * When the card is not selected (CS inactive), it does not drive MISO; the
+     * line floats to its pulled-up idle level, so the master clocks in 0xFF. The
+     * generic ssi_transfer_raw_default() would gate the call out and return 0x00
+     * for a deselected device, which is wrong for SPI SD: the ESP-IDF SDSPI
+     * driver's poll_busy() reads the bus with the card deselected and treats a
+     * non-zero (0xFF) byte as "card ready". Returning 0x00 makes it spin until
+     * timeout (tens of thousands of 1-byte transfers per command). We therefore
+     * declare SSI_CS_NONE (always invoked) and emulate the idle pull-up here.
+     *
+     * CS is active-low on this board, so dev->cs == 1 means the card is
+     * deselected.
+     */
+    if (dev->cs) {
+        return 0xFF;
+    }
+
+    /*
      * Special case: allow CMD12 (STOP TRANSMISSION) while reading data.
      *
      * See "Physical Layer Specification Version 8.00" chapter 7.5.2.2,
@@ -366,11 +383,30 @@ static const VMStateDescription vmstate_ssi_sd = {
     }
 };
 
+/*
+ * CS gpio handler. We declare SSI_CS_NONE so ssi_sd_transfer() is always invoked
+ * (to emulate the MISO idle pull-up when deselected), which means the generic
+ * ssi_peripheral_realize() does NOT install the default SSI_GPIO_CS input. So we
+ * register our own here, mirroring ssi_cs_default(): track the level in dev->cs
+ * and notify the set_cs() handler on a change.
+ */
+static void ssi_sd_cs_gpio(void *opaque, int n, int level)
+{
+    SSIPeripheral *s = SSI_PERIPHERAL(opaque);
+    bool cs = !!level;
+
+    if (s->cs != cs && s->spc->set_cs) {
+        s->spc->set_cs(s, cs);
+    }
+    s->cs = cs;
+}
+
 static void ssi_sd_realize(SSIPeripheral *d, Error **errp)
 {
     ssi_sd_state *s = SSI_SD(d);
 
     qbus_init(&s->sdbus, sizeof(s->sdbus), TYPE_SD_BUS, DEVICE(d), "sd-bus");
+    qdev_init_gpio_in_named(DEVICE(d), ssi_sd_cs_gpio, SSI_GPIO_CS, 1);
 }
 
 static void ssi_sd_reset(DeviceState *dev)
@@ -431,7 +467,10 @@ static void ssi_sd_class_init(ObjectClass *klass, void *data)
     k->realize = ssi_sd_realize;
     k->transfer = ssi_sd_transfer;
     k->set_cs = ssi_sd_set_cs;
-    k->cs_polarity = SSI_CS_LOW;
+    /* SSI_CS_NONE: always invoke ssi_sd_transfer() so it can emulate the MISO
+     * idle pull-up (0xFF) when the card is deselected (see ssi_sd_transfer()).
+     * CS is still tracked via set_cs()/dev->cs for the active-low select. */
+    k->cs_polarity = SSI_CS_NONE;
     dc->vmsd = &vmstate_ssi_sd;
     device_class_set_legacy_reset(dc, ssi_sd_reset);
     /* Reason: GPIO chip-select line should be wired up */
