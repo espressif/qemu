@@ -180,6 +180,44 @@ static void xtensa_cpu_realizefn(DeviceState *dev, Error **errp)
     xcc->parent_realize(dev, errp);
 }
 
+#ifndef CONFIG_USER_ONLY
+static uint64_t xtensa_er_read(void *opaque, hwaddr addr, unsigned size)
+{
+    CPUXtensaState *env = opaque;
+    if (env->er_read) {
+        return env->er_read(env->er_opaque, addr, size);
+    }
+    return 0;
+}
+
+static void xtensa_er_write(void *opaque, hwaddr addr, uint64_t value,
+                            unsigned size)
+{
+    CPUXtensaState *env = opaque;
+    if (env->er_write) {
+        env->er_write(env->er_opaque, addr, value, size);
+    }
+}
+
+static const MemoryRegionOps xtensa_er_ops = {
+    .read = xtensa_er_read,
+    .write = xtensa_er_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+void xtensa_cpu_set_er_ops(CPUXtensaState *env,
+                           uint64_t (*read)(void *opaque, hwaddr addr,
+                                            unsigned size),
+                           void (*write)(void *opaque, hwaddr addr,
+                                         uint64_t val, unsigned size),
+                           void *opaque)
+{
+    env->er_read = read;
+    env->er_write = write;
+    env->er_opaque = opaque;
+}
+#endif /* !CONFIG_USER_ONLY */
+
 static void xtensa_cpu_initfn(Object *obj)
 {
     XtensaCPU *cpu = XTENSA_CPU(obj);
@@ -191,7 +229,7 @@ static void xtensa_cpu_initfn(Object *obj)
 #ifndef CONFIG_USER_ONLY
     env->address_space_er = g_malloc(sizeof(*env->address_space_er));
     env->system_er = g_malloc(sizeof(*env->system_er));
-    memory_region_init_io(env->system_er, obj, NULL, env, "er",
+    memory_region_init_io(env->system_er, obj, &xtensa_er_ops, env, "er",
                           UINT64_C(0x100000000));
     address_space_init(env->address_space_er, env->system_er, "ER");
 
