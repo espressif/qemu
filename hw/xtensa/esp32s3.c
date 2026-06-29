@@ -58,6 +58,7 @@
 #include "hw/misc/esp32s3_rsa.h"
 #include "hw/misc/esp32s3_hmac.h"
 #include "hw/misc/esp32s3_ds.h"
+#include "hw/misc/esp32s3_app_trace.h"
 #include "hw/timer/esp32s3_timg.h"
 #include "hw/timer/esp32s3_systimer.h"
 #include "hw/gpio/esp32s3_gpio.h"
@@ -318,8 +319,11 @@ struct Esp32s3MachineState {
 
     Esp32s3SocState esp32s3;
     DeviceState *flash_dev;
+    char *app_trace_mode;    /* "file_io", or NULL when disabled */
+    char *app_trace_path;    /* sandbox root for AppTrace files, or NULL */
 };
 #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
+OBJECT_DECLARE_SIMPLE_TYPE(Esp32s3MachineState, ESP32S3_MACHINE)
 
 static void esp32s3_init_openeth(Esp32s3SocState *ms)
 {
@@ -394,6 +398,22 @@ static void esp32s3_soc_realize(DeviceState *dev, Error **errp)
         qdev_realize(DEVICE(&s->cpu[i]), NULL, &error_fatal);
     }
 
+    Esp32s3MachineState *m3 = ESP32S3_MACHINE(ms);
+    if (m3->app_trace_mode) {
+        Esp32s3AppTraceState *app_trace =
+            esp32s3_app_trace_new(m3->app_trace_mode, m3->app_trace_path, errp);
+        if (!app_trace) {
+            return;
+        }
+        object_property_add_child(OBJECT(s), "app_trace", OBJECT(app_trace));
+        object_unref(OBJECT(app_trace));
+        for (int i = 0; i < ms->smp.cpus; ++i) {
+            xtensa_cpu_set_er_ops(&s->cpu[i].env,
+                                  esp32s3_app_trace_er_read,
+                                  esp32s3_app_trace_er_write,
+                                  esp32s3_app_trace_core_context(app_trace, i));
+        }
+    }
 
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
         char name[16];
@@ -587,8 +607,6 @@ static uint64_t translate_phys_addr(void *opaque, uint64_t addr)
 
     return cpu_get_phys_page_debug(CPU(cpu), addr);
 }
-
-OBJECT_DECLARE_SIMPLE_TYPE(Esp32s3MachineState, ESP32S3_MACHINE)
 
 // -----------------------------------------------
 
@@ -975,6 +993,33 @@ static ram_addr_t esp32s3_fixup_ram_size(ram_addr_t requested_size)
 }
 
 /* Initialize machine type */
+static char *esp32s3_get_app_trace(Object *obj, Error **errp)
+{
+    Esp32s3MachineState *ms = ESP32S3_MACHINE(obj);
+    return g_strdup(ms->app_trace_mode);
+}
+
+static void esp32s3_set_app_trace(Object *obj, const char *value, Error **errp)
+{
+    Esp32s3MachineState *ms = ESP32S3_MACHINE(obj);
+    g_free(ms->app_trace_mode);
+    ms->app_trace_mode = g_strdup(value);
+}
+
+static char *esp32s3_get_app_trace_path(Object *obj, Error **errp)
+{
+    Esp32s3MachineState *ms = ESP32S3_MACHINE(obj);
+    return g_strdup(ms->app_trace_path);
+}
+
+static void esp32s3_set_app_trace_path(Object *obj, const char *value,
+                                      Error **errp)
+{
+    Esp32s3MachineState *ms = ESP32S3_MACHINE(obj);
+    g_free(ms->app_trace_path);
+    ms->app_trace_path = g_strdup(value);
+}
+
 static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -984,6 +1029,20 @@ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
     mc->default_cpus = 2;
     mc->default_ram_size = 0;
     mc->fixup_ram_size = esp32s3_fixup_ram_size;
+
+    object_class_property_add_str(oc, "app-trace",
+                                  esp32s3_get_app_trace, esp32s3_set_app_trace);
+    object_class_property_set_description(oc, "app-trace",
+        "Enable AppTrace JTAG host emulation (mode: file_io) so "
+        "esp_gcov_dump() can write coverage data to the host filesystem. "
+        "WARNING: without app-trace-path the guest can read/write any host "
+        "file with the privileges of the QEMU process");
+    object_class_property_add_str(oc, "app-trace-path",
+                                  esp32s3_get_app_trace_path,
+                                  esp32s3_set_app_trace_path);
+    object_class_property_set_description(oc, "app-trace-path",
+        "Confine AppTrace file paths under this host directory "
+        "(default: none, paths used verbatim)");
 }
 
 static const TypeInfo esp32s3_info = {

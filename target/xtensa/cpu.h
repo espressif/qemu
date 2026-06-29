@@ -530,6 +530,9 @@ struct CPUArchState {
     bool runstall;
     AddressSpace *address_space_er;
     MemoryRegion *system_er;
+    uint64_t (*er_read)(void *opaque, hwaddr addr, unsigned size);
+    void (*er_write)(void *opaque, hwaddr addr, uint64_t val, unsigned size);
+    void *er_opaque;
     int pending_irq_level; /* level of last raised IRQ */
     qemu_irq *irq_inputs;
     qemu_irq ext_irq_inputs[MAX_NINTERRUPT];
@@ -593,6 +596,12 @@ void xtensa_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr, vaddr addr,
                                       MemTxResult response, uintptr_t retaddr);
 hwaddr xtensa_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
 bool xtensa_debug_check_breakpoint(CPUState *cs);
+void xtensa_cpu_set_er_ops(CPUXtensaState *env,
+                           uint64_t (*read)(void *opaque, hwaddr addr,
+                                            unsigned size),
+                           void (*write)(void *opaque, hwaddr addr,
+                                         uint64_t val, unsigned size),
+                           void *opaque);
 #endif
 void xtensa_cpu_dump_state(CPUState *cpu, FILE *f, int flags);
 void xtensa_count_regs(const XtensaConfig *config,
