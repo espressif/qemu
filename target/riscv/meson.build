@@ -25,6 +25,7 @@ riscv_ss.add(files(
   'vcrypto_helper.c'
 ))
 riscv_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp_cpu.c'))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files('esp_cpu.c'))
 
 riscv_system_ss = ss.source_set()
 riscv_system_ss.add(files(

@@ -11,7 +11,6 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/queue.h"
-#include "qemu/main-loop.h"
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
@@ -31,12 +30,6 @@
 #define SET_BIT(reg, bit)   do { (reg) |= BIT(bit); } while(0)
 
 
-static void esp32c3_do_int(ESP32C3IntMatrixState *s, int line)
-{
-    qemu_irq_pulse(s->out_irqs[line]);
-}
-
-
 static int esp32c3_get_output_line_level(ESP32C3IntMatrixState *s, int line)
 {
     int level_shared = 0;
@@ -52,27 +45,37 @@ static int esp32c3_get_output_line_level(ESP32C3IntMatrixState *s, int line)
     return level_shared;
 }
 
-/**
- * Try to clear the given interrupt from the pending bitmap.
- * If the signal is shared with other interrupt sources, make sure all of them are low (0)
- * before clearing the pending IRQ from the bitmap.
- */
-static void esp32c3_intmatrix_clear_pending(ESP32C3IntMatrixState *s, int line)
+static bool esp32c3_intmatrix_line_should_assert(ESP32C3IntMatrixState *s, int line)
 {
-    /* Check if another GPIO IRQ is sharing the same output line. They must all be low before
-     * clearing the pending bit. This is due to the fact that output lines
-     * can be shared on the ESP32-C3 */
-    const int output_level = esp32c3_get_output_line_level(s, line);
-    if (!output_level) {
-        /* The output interrupt line is 0, so we can clear the pending flag */
-        CLEAR_BIT(s->irq_pending, line);
+    if (line == 0) {
+        return false;
+    }
+
+    return BIT_SET(s->irq_enabled, line) &&
+           esp32c3_get_output_line_level(s, line) != 0 &&
+           (s->irq_prio[line] >= s->irq_thres);
+}
+
+static void esp32c3_intmatrix_update_line(ESP32C3IntMatrixState *s, int line)
+{
+    if (line == 0) {
+        return;
+    }
+
+    const bool assert_line = esp32c3_intmatrix_line_should_assert(s, line);
+
+    if (assert_line) {
+        qemu_irq_raise(s->out_irqs[line]);
+    } else {
+        qemu_irq_lower(s->out_irqs[line]);
     }
 }
 
-
-static inline bool esp32c3_intmatrix_can_trigger(ESP32C3IntMatrixState *s)
+static void esp32c3_intmatrix_refresh_all(ESP32C3IntMatrixState *s)
 {
-    return esp_cpu_accept_interrupts(s->cpu);
+    for (uint32_t i = 1; i <= ESP32C3_CPU_INT_COUNT; i++) {
+        esp32c3_intmatrix_update_line(s, i);
+    }
 }
 
 
@@ -81,7 +84,7 @@ static void esp32c3_intmatrix_irq_handler(void *opaque, int n, int level)
     ESP32C3IntMatrixState *s = ESP32C3_INTMATRIX(opaque);
 
     /* Update the level mirror */
-    assert(n <= ESP32C3_INT_MATRIX_INPUTS);
+    assert(n < ESP32C3_INT_MATRIX_INPUTS);
 
     /* Make sure level is 0 or 1 */
     level = level ? 1 : 0;
@@ -95,140 +98,12 @@ static void esp32c3_intmatrix_irq_handler(void *opaque, int n, int level)
         CLEAR_BIT(s->irq_levels, n);
     }
 
-    const int line = s->irq_map[n];
-
-    /* If the line is not enable, don't do anything special, the level has been recorded already.
-     * Don't do anything if the line is at the same level as before */
-    if ((s->irq_enabled & BIT(line)) == 0 || former_level == level) {
-        return;
-    }
-
-    /* If the new level is high, check that the priority is equal or bigger than the threshold.
-     * If that's the case, we can execute the interrupt, else, mark it as pending. */
-    if (level == 1) {
-#if INTMATRIX_DEBUG
-        info_report("\x1b[31m[INTMATRIX] IRQ %d priority set to %d, CPU threshold %d \x1b[0m\n",
-                    line, s->irq_prio[line], s->irq_thres);
-#endif
-
-        if (s->irq_prio[line] >= s->irq_thres && esp32c3_intmatrix_can_trigger(s)) {
-            esp32c3_do_int(s, line);
-        } else {
-            SET_BIT(s->irq_pending, line);
-        }
-    } else if (BIT_SET(s->irq_pending, line)) {
-        esp32c3_intmatrix_clear_pending(s, line);
+    /* Nothing to do if the level is unchanged. */
+    if (former_level != level) {
+        const int line = s->irq_map[n];
+        esp32c3_intmatrix_update_line(s, line);
     }
 }
-
-
-static void esp32c3_intmatrix_irq_prio_changed(ESP32C3IntMatrixState* s, uint32_t line, uint8_t priority)
-{
-    const bool accept = esp32c3_intmatrix_can_trigger(s);
-
-    if (accept && priority >= s->irq_thres && BIT_SET(s->irq_pending, line)) {
-        /* No need to clear the pending bit here. As soon as the interrupt source will be ACK by the
-         * software, its level will be update, as well as its pending state. */
-        esp32c3_do_int(s, line);
-    }
-}
-
-
-static void esp32c3_intmatrix_core_prio_changed(ESP32C3IntMatrixState* s, uint64_t new_cpu_priority)
-{
-    uint64_t pending = s->irq_pending;
-    const bool accept = esp32c3_intmatrix_can_trigger(s);
-
-    if (pending && accept) {
-        int64_t priority = -1;
-        uint_fast32_t line = 0;
-
-        /* Clear all the interrupts that have a lower priority than the new CPU threshold */
-        for (uint_fast32_t i = 1; i <= ESP32C3_CPU_INT_COUNT; i++) {
-
-            const uint64_t line_prio = s->irq_prio[i];
-            if (line_prio < new_cpu_priority) {
-                CLEAR_BIT(pending, i);
-            }
-        }
-
-        /* No high level interrupt pending? */
-        if (pending == 0) {
-            return;
-        }
-
-        /* Look for the highest priority pending interrupt */
-        for (uint_fast32_t i = 1; i <= ESP32C3_CPU_INT_COUNT; i++) {
-            const int64_t line_prio = (int64_t) s->irq_prio[i];
-            if (BIT_SET(pending, i) && line_prio > priority) {
-                priority = line_prio;
-                line = i;
-            }
-        }
-
-        /* Make sure a line was selected with its new priority */
-        assert(line != 0);
-        assert(priority >= new_cpu_priority);
-        /* No need to clear the pending bit here. As soon as the interrupt source will be ACK by the
-         * software, its level will be update, as well as its pending state. */
-        esp32c3_do_int(s, line);
-    }
-}
-
-
-/**
- * Bottom-half: deferred re-evaluation/delivery of pending interrupts at a clean
- * execution point (next main-loop iteration). Scheduled from a remap-while-asserted
- * so the CPU takes the routed interrupt cleanly, instead of synchronously re-entering
- * an ISR from inside the guest's own write to the interrupt-map register.
- */
-static void esp32c3_intmatrix_reeval_bh(void *opaque)
-{
-    ESP32C3IntMatrixState *s = opaque;
-    esp32c3_intmatrix_core_prio_changed(s, s->irq_thres);
-}
-
-
-/**
- * This function is called when the status (enabled/disabled) of a line has just been changed.
- * It will update the pending IRQ map.
- */
-static void esp32c3_intmatrix_irq_status_changed(ESP32C3IntMatrixState* s, uint32_t line, int enabled)
-{
-    const bool accept = esp32c3_intmatrix_can_trigger(s);
-
-    if (!enabled) {
-
-        /* IRQ has just been disabled, if any interrupt is pending, clear it */
-        CLEAR_BIT(s->irq_pending, line);
-
-    } else if (esp32c3_get_output_line_level(s, line)) {
-
-        /* IRQ has just been re-enabled, we have to check if any interrupt source is mapped to it, and
-         * if that's the case, check if their level is high, as we would need to potentially trigger an
-         * interrupt. */
-        SET_BIT(s->irq_pending, line);
-
-        if (accept) {
-            /* If the CPU can accept interrupt, trigger an interrupt now */
-            esp32c3_do_int(s, line);
-        }
-    }
-}
-
-
-/**
- * Callback invoked by the CPU as soon as interrupts are re-enabled
- */
-static bool esp32c3_intmatrix_mie_enabled(void* opaque)
-{
-    ESP32C3IntMatrixState *s = ESP32C3_INTMATRIX(opaque);
-    /* We need to check if any interrupt is pending and trigger it. We have such function already, triggered when
-     * the core priority changes, let's reuse this function by giving the same core priority */
-    esp32c3_intmatrix_core_prio_changed(s, s->irq_thres);
-    return s->irq_pending != 0;
-}
-
 
 static uint64_t esp32c3_intmatrix_read(void* opaque, hwaddr addr, unsigned int size)
 {
@@ -265,48 +140,16 @@ static void esp32c3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
     const uint32_t index = addr / sizeof(uint32_t);
 
     if (index < ESP32C3_INT_MATRIX_INPUTS) {
-
-        const int old_line = s->irq_map[index];
-        s->irq_map[index] = (value & 0x1f);
-
-        /* When a source is remapped to a *different* CPU line, the OLD line may
-         * no longer have any asserted source. On real hardware a CPU line's
-         * level is the OR of the levels of all sources mapped to it, so once
-         * this source leaves, the old line de-asserts. Recompute the old line
-         * and clear a now-stale pending bit. Without this, an ISR that disables
-         * itself by remapping its source to a parked/disabled line — exactly
-         * what the SPI bus-lock's bg_disable()/esp_intr_disable() does at ISR
-         * entry — leaves the old line permanently pending, so it is re-delivered
-         * the instant the handler returns and the ISR re-fires forever. */
-        if (old_line != s->irq_map[index] && old_line != 0 &&
-            esp32c3_get_output_line_level(s, old_line) == 0) {
-            CLEAR_BIT(s->irq_pending, old_line);
-        }
-
-        /* Re-evaluate routing on a remap. The source's asserted level is unchanged,
-         * but it now targets a (possibly different) CPU line. On real hardware the
-         * level-triggered matrix immediately routes the current level to the new
-         * line; without re-evaluating here, a source that is asserted *while* being
-         * remapped onto an enabled line would never reach the CPU. This is exactly
-         * what the SPI master does when it switches a completed/asserted transfer
-         * from polled to interrupt-driven completion (remapping ETS_SPI2 onto an
-         * active line while trans_done is still high) — without this it deadlocks. */
-        {
-            const int new_line = s->irq_map[index];
-            if ((s->irq_levels & BIT(index)) && (s->irq_enabled & BIT(new_line))) {
-                /* Mark the line pending and deliver it from a bottom-half on the
-                 * next main-loop iteration. Delivering it synchronously here would
-                 * pulse the CPU line from within the guest's interrupt-config write
-                 * (e.g. esp_intr_enable's matrix-register store), re-entering an ISR
-                 * at an unsafe point and leaving the CPU interrupt threshold stuck
-                 * elevated. The BH re-evaluates once we're back at a clean point. */
-                SET_BIT(s->irq_pending, new_line);
-                qemu_bh_schedule(s->reeval_bh);
-            }
-        }
+        const uint8_t old_line = s->irq_map[index];
+        const uint8_t new_line = (value & 0x1f);
+        s->irq_map[index] = new_line;
 #if INTMATRIX_DEBUG
         info_report("\x1b[31m[INTMATRIX] Mapping interrupt %d to CPU line %d\x1b[0m\n", index, s->irq_map[index]);
 #endif
+        if (old_line != new_line) {
+            esp32c3_intmatrix_update_line(s, old_line);
+            esp32c3_intmatrix_update_line(s, new_line);
+        }
 
     } else if (index >= ESP32C3_INTMATRIX_IO_PRIO_START && index < ESP32C3_INTMATRIX_IO_PRIO_END) {
 
@@ -317,7 +160,7 @@ static void esp32c3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
         info_report("\x1b[31m[INTMATRIX] Priority of line %d set to %d\x1b[0m\n", line, priority);
 #endif
         /* Check if the new priority interrupts the CPU */
-        esp32c3_intmatrix_irq_prio_changed(s, line, priority);
+        esp32c3_intmatrix_update_line(s, line);
 
     } else if (index == ESP32C3_INTMATRIX_IO_THRESH_REG) {
 
@@ -340,7 +183,7 @@ static void esp32c3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
 #if INTMATRIX_DEBUG
             info_report("\x1b[31m[INTMATRIX] Setting CPU IRQ threshold to %d\x1b[0m", priority);
 #endif
-            esp32c3_intmatrix_core_prio_changed(s, priority);
+            esp32c3_intmatrix_refresh_all(s);
         }
 
     } else if (index == ESP32C3_INTMATRIX_IO_ENABLE_REG) {
@@ -353,7 +196,7 @@ static void esp32c3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
             const int new_st = value & BIT(i);
             const int old_st = prev  & BIT(i);
             if (new_st != old_st) {
-                esp32c3_intmatrix_irq_status_changed(s, i, new_st ? 1 : 0);
+                esp32c3_intmatrix_update_line(s, i);
             }
         }
     } else if (index == ESP32C3_INTMATRIX_IO_TYPE_REG) {
@@ -385,7 +228,6 @@ static void esp32c3_intmatrix_reset_hold(Object *obj, ResetType type)
     memset(s->irq_map, 0, sizeof(s->irq_map));
     memset(s->irq_prio, 0, sizeof(s->irq_prio));
     s->irq_thres = 0;
-    s->irq_pending = 0;
     s->irq_levels = 0;
     s->irq_trigger = 0;
     s->irq_enabled = 0;
@@ -400,18 +242,7 @@ static void esp32c3_intmatrix_reset_hold(Object *obj, ResetType type)
 
 static void esp32c3_intmatrix_realize(DeviceState *dev, Error **errp)
 {
-    ESP32C3IntMatrixState *s = ESP32C3_INTMATRIX(dev);
-    EspRISCVCPU *cpu = s->cpu;
-    EspRISCVCPUClass *cpu_klass = ESP_CPU_GET_CLASS(cpu);
-
     esp32c3_intmatrix_reset_hold(OBJECT(dev), RESET_TYPE_COLD);
-
-    /* Bottom-half for deferred (safe-point) delivery of remap-while-asserted IRQs */
-    s->reeval_bh = qemu_bh_new(esp32c3_intmatrix_reeval_bh, s);
-
-    /* Register MIE callback */
-    assert(cpu);
-    cpu_klass->esp_cpu_register_mie_callback(cpu, esp32c3_intmatrix_mie_enabled, s);
 }
 
 

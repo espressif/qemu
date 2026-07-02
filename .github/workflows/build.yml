@@ -81,13 +81,13 @@ jobs:
             run_configure: "./.github/workflows/scripts/configure-win.sh"
 
           - platform: x86_64-apple-darwin
-            runs_on: macos-13
+            runs_on: macos-14
             shell: bash -e {0}
             run_prerequisites: "./.github/workflows/scripts/prerequisites-macos.sh"
             run_configure: "./.github/workflows/scripts/configure-macos.sh"
 
           - platform: aarch64-apple-darwin
-            runs_on: macos-13-xlarge
+            runs_on: macos-14-xlarge
             shell: bash -e {0}
             run_prerequisites: "./.github/workflows/scripts/prerequisites-macos.sh"
             run_configure: "./.github/workflows/scripts/configure-macos.sh"
@@ -100,7 +100,7 @@ jobs:
         shell: ${{ matrix.shell }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install prerequisites (${{ matrix.target }} @ ${{ matrix.platform }})
         if : ${{ matrix.platform != 'x86_64-w64-mingw32' }}
@@ -138,6 +138,11 @@ jobs:
         run: |
           ninja -C build install
 
+      - name: Bundle Windows DLLs (${{ matrix.target }} @ ${{ matrix.platform }})
+        if : ${{ matrix.platform == 'x86_64-w64-mingw32' }}
+        run: |
+          ./.github/workflows/scripts/bundle-win-dlls.sh install/qemu/bin
+
       - name: Package (${{ matrix.target }} @ ${{ matrix.platform }})
         env:
           VERSION: ${{ needs.Vars.outputs.VERSION }}
@@ -155,20 +160,20 @@ jobs:
 
       - name: Save build/build.ninja for failed builds
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-ninja-${{ matrix.target }}-${{ matrix.platform }}
           path: build/build.ninja
 
       - name: Dist filelist (dbg) (${{ matrix.target }} @ ${{ matrix.platform }})
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-filelist-${{ matrix.target }}-${{ matrix.platform }}
           path: |
             dist/dist-filelist-*
 
       - name: Dist artifacts (${{ matrix.target }} @ ${{ matrix.platform }})
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-qemu-${{ matrix.target }}-${{ matrix.platform }}
           path: |
@@ -178,6 +183,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [ Vars, Build ]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps :
       - name: Create a source archive
         id: create-source
@@ -201,13 +208,13 @@ jobs:
           ls -l
 
       - name: Source filelist (dbg)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: src-filelist
           path: |
             src-filelist.txt
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-qemu-*
           path: dist
@@ -238,7 +245,7 @@ jobs:
           rm -rf -- upload && mkdir -p upload && mv -v ${DIST_FILE_LIST} upload/
 
       - name: Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           draft: true
           files: upload/*

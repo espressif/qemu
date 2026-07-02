@@ -692,7 +692,7 @@ static void translate_vldbc_s3(DisasContext *dc, const OpcodeArg arg[], const ui
     {
         if (vldbc_8 == par[1]) tcg_gen_addi_i32(arg[1].out, arg[1].in, 1);
         if (vldbc_16 == par[1]) tcg_gen_addi_i32(arg[1].out, arg[1].in, 2);        
-    } else
+    } else if (par[0] != addr_nop)
     {
         qemu_log_mask(LOG_GUEST_ERROR, "unknown instruction extension (pc = %08x)\n", dc->pc);
         gen_exception_cause(dc, ILLEGAL_INSTRUCTION_CAUSE);
@@ -2846,17 +2846,26 @@ void HELPER(src_q_s3)(CPUXtensaState *env, uint32_t qa, uint32_t qs0, uint32_t q
     CPUXtensaEsp32s3State* tie = (CPUXtensaEsp32s3State*)(env->ext);
     int sar_value = tie->SAR_BYTE;
 
+    /* Need a temp copy since qa may alias qs0 or qs1 */
+    Q_reg tmp;
     for (int i = 0; i < (16 - sar_value); i++)
     {
-        tie->Q[qa].u8[i] = tie->Q[qs0].u8[i + sar_value];
+        tmp.u8[i] = tie->Q[qs0].u8[i + sar_value];
     }
     for (int i = 0; i < sar_value; i++)
     {
-        tie->Q[qa].u8[16 - sar_value + i] = tie->Q[qs1].u8[i];
+        tmp.u8[16 - sar_value + i] = tie->Q[qs1].u8[i];
     }
-    for (int i = 0; i < 16; i++)
+    tie->Q[qa].u64[0] = tmp.u64[0];
+    tie->Q[qa].u64[1] = tmp.u64[1];
+
+    /* QUP variant: also copy qs1 → qs0 */
+    if (op_type == vmul_qup)
     {
-        tie->Q[qs0].u8[i] = tie->Q[qs1].u8[i];
+        for (int i = 0; i < 16; i++)
+        {
+            tie->Q[qs0].u8[i] = tie->Q[qs1].u8[i];
+        }
     }
 }
 
@@ -3967,6 +3976,92 @@ void HELPER(ld_qacc_x_l_128_ip_s3)(CPUXtensaState *env, uint32_t op_type, uint32
     }
 }
 
+/* Store upper 32 bits of QACC_H or QACC_L to memory */
+uint32_t HELPER(st_qacc_x_h_32_ip_s3)(CPUXtensaState *env, uint32_t op_type)
+{
+    ACCQ_reg *qacc = cpu_qacc_ptr(env, 1);
+    if (op_type == wrur_qacc_l_0)
+    {
+        qacc = cpu_qacc_ptr(env, 0);
+    }
+    uint32_t data;
+    uint8_t* data_ptr = (uint8_t*)&data;
+    data_ptr[0] = qacc->u8[16];
+    data_ptr[1] = qacc->u8[17];
+    data_ptr[2] = qacc->u8[18];
+    data_ptr[3] = qacc->u8[19];
+    return data;
+}
+
+/* Store lower 128 bits of QACC_H or QACC_L to memory (64-bit chunk) */
+uint64_t HELPER(st_qacc_x_l_128_ip_s3)(CPUXtensaState *env, uint32_t op_type, uint32_t index)
+{
+    ACCQ_reg *qacc = cpu_qacc_ptr(env, 1);
+    if (op_type == wrur_qacc_l_0)
+    {
+        qacc = cpu_qacc_ptr(env, 0);
+    }
+    uint64_t data;
+    uint8_t* data_ptr = (uint8_t*)&data;
+    for (int i = 0; i < 8; i++)
+    {
+        data_ptr[i] = qacc->u8[i + index * 8];
+    }
+    return data;
+}
+
+static void translate_st_qacc_x_h_32_ip_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
+{
+    TCGv_i32 op_type = tcg_constant_i32((uint32_t)par[0]);
+    TCGv_i32 addr = tcg_temp_new_i32();
+    // Align to 32 bit
+    tcg_gen_andi_i32(addr, arg[0].in, 0xfffffffc);
+
+    MemOp mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
+
+    TCGv_i32 data = tcg_temp_new_i32();
+    gen_helper_st_qacc_x_h_32_ip_s3(data, tcg_env, op_type);
+
+    tcg_gen_qemu_st_i32(data, addr, dc->cring, mop);
+
+    tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
+
+    tcg_temp_free_i32(data);
+    tcg_temp_free_i32(addr);
+    tcg_temp_free_i32(op_type);
+}
+
+static void translate_st_qacc_x_l_128_ip_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
+{
+    TCGv_i32 op_type = tcg_constant_i32((uint32_t)par[0]);
+
+    for (int i = 0; i < 2; i++)
+    {
+        TCGv_i32 addr;
+        MemOp mop;
+        addr = tcg_temp_new_i32();
+        // Align to 128 bit
+        tcg_gen_andi_i32(addr, arg[0].in, 0xfffffff0);
+        tcg_gen_addi_i32(addr, addr, i * 8);
+
+        mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr);
+
+        TCGv_i64 data = tcg_temp_new_i64();
+        TCGv_i32 index = tcg_constant_i32(i);
+
+        gen_helper_st_qacc_x_l_128_ip_s3(data, tcg_env, op_type, index);
+
+        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+
+        tcg_temp_free_i64(data);
+        tcg_temp_free_i32(addr);
+        tcg_temp_free_i32(index);
+    }
+
+    tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
+    tcg_temp_free_i32(op_type);
+}
+
 static void translate_ld_qacc_x_l_128_ip_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
 {
     TCGv_i32 op_type = tcg_constant_i32((uint32_t)par[0]);
@@ -3997,6 +4092,188 @@ static void translate_ld_qacc_x_l_128_ip_s3(DisasContext *dc, const OpcodeArg ar
 
     tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
     tcg_temp_free_i32(op_type);
+}
+
+/* EE.ST.ACCX.IP: store ACCX (40-bit, zero-extended to 64-bit) to memory */
+uint64_t HELPER(st_accx_s3)(CPUXtensaState *env)
+{
+    CPUXtensaEsp32s3State* tie = (CPUXtensaEsp32s3State*)(env->ext);
+    return (uint64_t)(tie->ACCX & 0x000000ffffffffffULL);
+}
+
+static void translate_st_accx_ip_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
+{
+    TCGv_i32 addr = tcg_temp_new_i32();
+    /* Align to 8 bytes */
+    tcg_gen_andi_i32(addr, arg[0].in, 0xfffffff8);
+
+    MemOp mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr);
+
+    TCGv_i64 data = tcg_temp_new_i64();
+    gen_helper_st_accx_s3(data, tcg_env);
+
+    tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+
+    tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
+
+    tcg_temp_free_i64(data);
+    tcg_temp_free_i32(addr);
+}
+
+/* EE.LD.UA_STATE.IP: load 128-bit UA_STATE from memory */
+void HELPER(ld_ua_state_s3)(CPUXtensaState *env, uint64_t data, uint32_t low_high)
+{
+    CPUXtensaEsp32s3State* tie = (CPUXtensaEsp32s3State*)(env->ext);
+    tie->UA_STATE.u64[low_high] = data;
+}
+
+static void translate_ld_ua_state_ip_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
+{
+    for (int i = 0; i < 2; i++)
+    {
+        TCGv_i32 addr = tcg_temp_new_i32();
+        /* Align to 16 bytes */
+        tcg_gen_andi_i32(addr, arg[0].in, 0xfffffff0);
+        tcg_gen_addi_i32(addr, addr, i * 8);
+
+        MemOp mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr);
+
+        TCGv_i64 data = tcg_temp_new_i64();
+        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+
+        TCGv_i32 low_high = tcg_constant_i32(i);
+        gen_helper_ld_ua_state_s3(tcg_env, data, low_high);
+
+        tcg_temp_free_i64(data);
+        tcg_temp_free_i32(addr);
+        tcg_temp_free_i32(low_high);
+    }
+
+    tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
+}
+
+/* EE.ST.UA_STATE.IP: store 128-bit UA_STATE to memory */
+uint64_t HELPER(st_ua_state_s3)(CPUXtensaState *env, uint32_t low_high)
+{
+    CPUXtensaEsp32s3State* tie = (CPUXtensaEsp32s3State*)(env->ext);
+    return tie->UA_STATE.u64[low_high];
+}
+
+static void translate_st_ua_state_ip_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
+{
+    for (int i = 0; i < 2; i++)
+    {
+        TCGv_i32 addr = tcg_temp_new_i32();
+        /* Align to 16 bytes */
+        tcg_gen_andi_i32(addr, arg[0].in, 0xfffffff0);
+        tcg_gen_addi_i32(addr, addr, i * 8);
+
+        MemOp mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr);
+
+        TCGv_i64 data = tcg_temp_new_i64();
+        TCGv_i32 low_high = tcg_constant_i32(i);
+        gen_helper_st_ua_state_s3(data, tcg_env, low_high);
+
+        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+
+        tcg_temp_free_i64(data);
+        tcg_temp_free_i32(addr);
+        tcg_temp_free_i32(low_high);
+    }
+
+    tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
+}
+
+/* EE.LDXQ.32: indexed load 32-bit into Q register segment */
+void HELPER(ldxq_32_s3)(CPUXtensaState *env, uint32_t qu, uint32_t sel4, uint32_t data)
+{
+    CPUXtensaEsp32s3State* tie = (CPUXtensaEsp32s3State*)(env->ext);
+    tie->Q[qu].u32[sel4] = data;
+}
+
+static void translate_ldxq_32_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
+{
+    /* EE.LDXQ.32 qu, qs, as, sel4, sel8 */
+    /* arg[0]=qu, arg[1]=qs, arg[2]=as, arg[3]=sel4(imm), arg[4]=sel8(imm) */
+    uint32_t sel8 = (uint32_t)arg[4].imm;
+    uint32_t sel4 = (uint32_t)arg[3].imm;
+
+    /* Compute address: as + sign_extend(qs.s16[sel8]) * 4 - 4, aligned to 4 */
+    TCGv_i32 qs_idx = tcg_constant_i32((uint32_t)arg[1].imm);
+    TCGv_i32 sel8_val = tcg_constant_i32(sel8);
+    TCGv_i32 offset = tcg_temp_new_i32();
+    gen_helper_ldstxq_addr_s3(offset, tcg_env, qs_idx, sel8_val);
+
+    TCGv_i32 addr = tcg_temp_new_i32();
+    tcg_gen_add_i32(addr, arg[2].in, offset);
+    tcg_gen_andi_i32(addr, addr, 0xfffffffc);
+
+    MemOp mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
+
+    TCGv_i32 data = tcg_temp_new_i32();
+    tcg_gen_qemu_ld_i32(data, addr, dc->cring, mop);
+
+    TCGv_i32 qu_idx = tcg_constant_i32((uint32_t)arg[0].imm);
+    TCGv_i32 sel4_val = tcg_constant_i32(sel4);
+    gen_helper_ldxq_32_s3(tcg_env, qu_idx, sel4_val, data);
+
+    tcg_temp_free_i32(data);
+    tcg_temp_free_i32(addr);
+    tcg_temp_free_i32(offset);
+    tcg_temp_free_i32(qs_idx);
+    tcg_temp_free_i32(sel8_val);
+    tcg_temp_free_i32(qu_idx);
+    tcg_temp_free_i32(sel4_val);
+}
+
+/* EE.STXQ.32: indexed store 32-bit from Q register segment */
+uint32_t HELPER(stxq_32_s3)(CPUXtensaState *env, uint32_t qv, uint32_t sel4)
+{
+    CPUXtensaEsp32s3State* tie = (CPUXtensaEsp32s3State*)(env->ext);
+    return tie->Q[qv].u32[sel4];
+}
+
+/* Helper to compute address offset: sign_extend(qs.s16[sel8]) * 4 - 4 */
+uint32_t HELPER(ldstxq_addr_s3)(CPUXtensaState *env, uint32_t qs, uint32_t sel8)
+{
+    CPUXtensaEsp32s3State* tie = (CPUXtensaEsp32s3State*)(env->ext);
+    int32_t offset = (int32_t)tie->Q[qs].s16[sel8];
+    return offset * 4 - 4;
+}
+
+static void translate_stxq_32_s3(DisasContext *dc, const OpcodeArg arg[], const uint32_t par[])
+{
+    /* EE.STXQ.32 qv, qs, as, sel4, sel8 */
+    /* arg[0]=qv, arg[1]=qs, arg[2]=as, arg[3]=sel4(imm), arg[4]=sel8(imm) */
+    uint32_t sel8 = (uint32_t)arg[4].imm;
+    uint32_t sel4 = (uint32_t)arg[3].imm;
+
+    /* Get data to store */
+    TCGv_i32 qv_idx = tcg_constant_i32((uint32_t)arg[0].imm);
+    TCGv_i32 sel4_val = tcg_constant_i32(sel4);
+    TCGv_i32 data = tcg_temp_new_i32();
+    gen_helper_stxq_32_s3(data, tcg_env, qv_idx, sel4_val);
+
+    /* Compute address: as + sign_extend(qs.s16[sel8]) * 4 - 4, aligned to 4 */
+    TCGv_i32 qs_idx = tcg_constant_i32((uint32_t)arg[1].imm);
+    TCGv_i32 sel8_val = tcg_constant_i32(sel8);
+    TCGv_i32 offset = tcg_temp_new_i32();
+    gen_helper_ldstxq_addr_s3(offset, tcg_env, qs_idx, sel8_val);
+
+    TCGv_i32 addr = tcg_temp_new_i32();
+    tcg_gen_add_i32(addr, arg[2].in, offset);
+    tcg_gen_andi_i32(addr, addr, 0xfffffffc);
+
+    MemOp mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
+    tcg_gen_qemu_st_i32(data, addr, dc->cring, mop);
+
+    tcg_temp_free_i32(data);
+    tcg_temp_free_i32(addr);
+    tcg_temp_free_i32(offset);
+    tcg_temp_free_i32(qv_idx);
+    tcg_temp_free_i32(sel4_val);
+    tcg_temp_free_i32(qs_idx);
+    tcg_temp_free_i32(sel8_val);
 }
 
 static const XtensaOpcodeOps tie_ops[] = {
@@ -4116,7 +4393,29 @@ static const XtensaOpcodeOps tie_ops[] = {
         .op_flags = XTENSA_OP_LOAD,
         .coprocessor = 0x0,
     },
-    // VLDBC 8/16/32 bit
+    // VLDBC 8/16/32 bit (bare, no address update)
+    {
+        .name = "ee.vldbc.8",
+        .translate = translate_vldbc_s3,
+        .par = (const uint32_t[]){addr_nop, vldbc_8},
+        .op_flags = XTENSA_OP_LOAD,
+        .coprocessor = 0x0,
+    },
+    {
+        .name = "ee.vldbc.16",
+        .translate = translate_vldbc_s3,
+        .par = (const uint32_t[]){addr_nop, vldbc_16},
+        .op_flags = XTENSA_OP_LOAD,
+        .coprocessor = 0x0,
+    },
+    {
+        .name = "ee.vldbc.32",
+        .translate = translate_vldbc_s3,
+        .par = (const uint32_t[]){addr_nop, vldbc_32},
+        .op_flags = XTENSA_OP_LOAD,
+        .coprocessor = 0x0,
+    },
+    // VLDBC 8/16/32 bit (with address post-update)
     {
         .name = "ee.vldbc.8.ip",
         .translate = translate_vldbc_s3,
@@ -5821,6 +6120,73 @@ static const XtensaOpcodeOps tie_ops[] = {
         .translate = translate_ld_qacc_x_l_128_ip_s3,
         .par = (const uint32_t[]){wrur_qacc_l_0},
         .op_flags = XTENSA_OP_LOAD,
+        .coprocessor = 0x0,
+    },
+    // st.qacc_x.h.32.ip / st.qacc_x.l.128.ip
+    {
+        .name = "ee.st.qacc_h.h.32.ip",
+        .translate = translate_st_qacc_x_h_32_ip_s3,
+        .par = (const uint32_t[]){wrur_qacc_h_0},
+        .op_flags = XTENSA_OP_STORE,
+        .coprocessor = 0x0,
+    },
+    {
+        .name = "ee.st.qacc_l.h.32.ip",
+        .translate = translate_st_qacc_x_h_32_ip_s3,
+        .par = (const uint32_t[]){wrur_qacc_l_0},
+        .op_flags = XTENSA_OP_STORE,
+        .coprocessor = 0x0,
+    },
+    {
+        .name = "ee.st.qacc_h.l.128.ip",
+        .translate = translate_st_qacc_x_l_128_ip_s3,
+        .par = (const uint32_t[]){wrur_qacc_h_0},
+        .op_flags = XTENSA_OP_STORE,
+        .coprocessor = 0x0,
+    },
+    {
+        .name = "ee.st.qacc_l.l.128.ip",
+        .translate = translate_st_qacc_x_l_128_ip_s3,
+        .par = (const uint32_t[]){wrur_qacc_l_0},
+        .op_flags = XTENSA_OP_STORE,
+        .coprocessor = 0x0,
+    },
+    // ee.st.accx.ip
+    {
+        .name = "ee.st.accx.ip",
+        .translate = translate_st_accx_ip_s3,
+        .par = (const uint32_t[]){},
+        .op_flags = XTENSA_OP_STORE,
+        .coprocessor = 0x0,
+    },
+    // ee.ld.ua_state.ip / ee.st.ua_state.ip
+    {
+        .name = "ee.ld.ua_state.ip",
+        .translate = translate_ld_ua_state_ip_s3,
+        .par = (const uint32_t[]){},
+        .op_flags = XTENSA_OP_LOAD,
+        .coprocessor = 0x0,
+    },
+    {
+        .name = "ee.st.ua_state.ip",
+        .translate = translate_st_ua_state_ip_s3,
+        .par = (const uint32_t[]){},
+        .op_flags = XTENSA_OP_STORE,
+        .coprocessor = 0x0,
+    },
+    // ee.ldxq.32 / ee.stxq.32
+    {
+        .name = "ee.ldxq.32",
+        .translate = translate_ldxq_32_s3,
+        .par = (const uint32_t[]){},
+        .op_flags = XTENSA_OP_LOAD,
+        .coprocessor = 0x0,
+    },
+    {
+        .name = "ee.stxq.32",
+        .translate = translate_stxq_32_s3,
+        .par = (const uint32_t[]){},
+        .op_flags = XTENSA_OP_STORE,
         .coprocessor = 0x0,
     },
 };

@@ -158,6 +158,20 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
   'esp32c3_hmac.c'
 ))
 
+system_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files(
+  'esp32c6_cache.c',
+  'esp32c6_i2c_ana_mst.c',
+  'esp32c6_intpri.c',
+  'esp32c6_jtag.c',
+  'esp32c6_lp.c',
+  'esp32c6_modem.c',
+  'esp32c6_pcr.c',
+  'esp32c6_spi_mem.c',
+  'esp_sha.c',
+  'esp32c3_sha.c',
+  'esp32c6_sha.c',
+))
+
 system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files(
   'esp32s3_cache.c',
   'ssi_psram.c',

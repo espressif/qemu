@@ -42,15 +42,6 @@ typedef struct {
 } ESPCPUCycleCounter;
 
 /**
- * @brief Callback type called when MIE status bit is re-enabled
- *
- * @param Opaque context given when registering the callback
- *
- * @returns true if any interrupt is pending, false is no interrupt is pending
- */
-typedef bool (*EspIntEnableCallback)(void*);
-
-/**
  * Espressif's RISC-V core is different from standard RISC-V because of the way interrupts are handled.
  * Extend the standard RISC-V core implementation.
  */
@@ -62,22 +53,43 @@ typedef struct EspRISCVCPU {
     ESPCPUCycleCounter cc_user;
     ESPCPUCycleCounter cc_machine;
 
-    /* Callback called when the interrupts are re-enabled */
-    EspIntEnableCallback mie_enabled_callback;
-    void* mie_enabled_opaque;
-
     /*< public >*/
     /* The parent object already has a reset vector property */
     uint32_t hartid_base;
     /* Parent IRQ_M line */
     qemu_irq parent_irq;
-    /* Number of the IRQ that triggered the interrupt */
-    uint32_t irq_cause;
-    /* Interrupts are not always synchronous, so MIE may still be set to 1 while an
-     * interrupt is waiting to be handled. So, keep a mirrored MIE to mark whether
-     * we can receive interrupts or not. */
-    bool irq_pending;
+    /* Bitmap of interrupt matrix output lines currently asserted on CPU inputs. */
+    uint32_t irq_lines;
+    /* Espressif PMA (Physical Memory Attribute) extension. Set by SOC machine
+     * code: the ESP32-C6 needs the PMA CSRs registered, the ESP32-C3 does not. */
+    bool has_pma;
+    /* ESP32-C6 (and similar) repurpose the standard RISC-V mie CSR (0x304) as
+     * a per-line external-interrupt enable bitmap (MXIE), with the four CLINT
+     * enables (USIE, MSIE, UTIE, MTIE) at their classic positions and the
+     * remaining 28 bits acting as enables for external interrupts 1..2, 5..6,
+     * 8..31 (TRM Reg 1.8, §1.6.2). When this property is set we override the
+     * mie CSR ops so writes flow into `mie_enabled` and the intmatrix can use
+     * it as a second per-line gate alongside PLIC_MXINT_ENABLE_REG. The
+     * ESP32-C3 does not repurpose mie and leaves this disabled. */
+    bool mie_as_bitmap;
+    /* Per-line external-interrupt enable bitmap, populated by guest writes to
+     * the mie CSR when mie_as_bitmap is true. Only meaningful in that mode. */
+    uint32_t mie_enabled;
+    /* Optional notifier invoked after every guest write to the mie CSR (only
+     * when mie_as_bitmap is true). The intmatrix registers itself here so it
+     * can refresh the per-line IRQ assertion state. */
+    void (*mie_changed_cb)(void *opaque);
+    void *mie_changed_opaque;
 } EspRISCVCPU;
+
+/**
+ * Register a callback to be invoked after every guest write to the mie CSR.
+ * Only meaningful when mie_as_bitmap is true on this CPU. The callback is
+ * called with `cpu->mie_enabled` already updated.
+ */
+void esp_cpu_set_mie_changed_cb(EspRISCVCPU *cpu,
+                                void (*cb)(void *opaque),
+                                void *opaque);
 
 
 typedef struct EspRISCVCPUClass {
@@ -86,15 +98,6 @@ typedef struct EspRISCVCPUClass {
     DeviceRealize parent_realize;
     DeviceReset parent_reset;
     bool (*parent_exec_interrupt)(CPUState *cpu, int interrupt_request);
+    bool (*parent_has_work)(CPUState *cpu);
 
-    /*< public >*/
-    void (*esp_cpu_register_mie_callback)(EspRISCVCPU *env, EspIntEnableCallback callback, void* opaque);
 } EspRISCVCPUClass;
-
-/**
- * @brief Check whether the current CPU state can accept interrupts or not.
- * If an interrupt is currently pending and the MEPC was not set to the reset vector yet,
- * this function returns false.
- * If MIE bit is not set in the MSTATUS register, it will also return false.
- */
-bool esp_cpu_accept_interrupts(EspRISCVCPU *cpu);

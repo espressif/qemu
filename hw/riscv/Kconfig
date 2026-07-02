@@ -122,3 +122,9 @@ config RISCV_ESP32C3
     select SSI
     select SSI_SD
 
+config RISCV_ESP32C6
+    bool
+    default y
+    depends on RISCV32
+    select OPENCORES_ETH
+    select UNIMP

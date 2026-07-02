@@ -178,8 +178,19 @@ DEF_HELPER_4(wr_mask_gpio_out_s3, i32, env, i32, i32, i32)
 DEF_HELPER_3(mv_qr_s3, void, env, i32, i32)
 
 DEF_HELPER_2(ld_accx_s3, void, env, i64)
+DEF_HELPER_1(st_accx_s3, i64, env)
 DEF_HELPER_2(srs_accx_s3, i32, env, i32)
 
+DEF_HELPER_3(ld_ua_state_s3, void, env, i64, i32)
+DEF_HELPER_2(st_ua_state_s3, i64, env, i32)
+
+DEF_HELPER_4(ldxq_32_s3, void, env, i32, i32, i32)
+DEF_HELPER_3(stxq_32_s3, i32, env, i32, i32)
+DEF_HELPER_3(ldstxq_addr_s3, i32, env, i32, i32)
+
+
 DEF_HELPER_3(ld_qacc_x_h_32_ip_s3, void, env, i32, i32)
+DEF_HELPER_2(st_qacc_x_h_32_ip_s3, i32, env, i32)
 
 DEF_HELPER_4(ld_qacc_x_l_128_ip_s3, void, env, i32, i32, i64)
+DEF_HELPER_3(st_qacc_x_l_128_ip_s3, i64, env, i32, i32)

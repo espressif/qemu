@@ -47,6 +47,9 @@ static void esp_systimer_set_irqs(ESPSysTimerState *s)
         const int new_level = comparator->raw_st && comparator->int_enabled;
         if (new_level != comparator->cur_irq_level) {
             comparator->cur_irq_level = new_level;
+#if SYSTIMER_DEBUG
+            info_report("[SYSTIMER] Comp %d IRQ -> %d (raw=%d, ena=%d)", i, new_level, comparator->raw_st, comparator->int_enabled);
+#endif
             qemu_set_irq(comparator->irq, new_level);
         }
     }
@@ -150,6 +153,12 @@ static void esp_systimer_comparator_reprogram(ESPSysTimerComp* comparator)
     const int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     const int64_t target_ns = now + TICKS_TO_NS(diff);
     comparator->expire_time = target_ns;
+#if SYSTIMER_DEBUG
+    int comp_idx = comparator - s->comparators;
+    info_report("[SYSTIMER] Reprogram comp%d: counter=%lu alarm=%lu diff=%lu target_ns=%ld (now=%ld, delay=%ld ns)",
+                comp_idx, (unsigned long)count_val, (unsigned long)comparator->value,
+                (unsigned long)diff, (long)target_ns, (long)now, (long)(target_ns - now));
+#endif
     timer_mod_ns(&comparator->qtimer, target_ns);
 }
 
