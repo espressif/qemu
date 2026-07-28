@@ -68,6 +68,7 @@ blobs = [
   'esp32c6-rom.bin',
   'esp32h2-rom.bin',
   'esp32s3_rev0_rom.bin',
+  'esp32p4-rom.bin',
   'qemu-nsis.bmp',
   'multiboot.bin',
   'multiboot_dma.bin',

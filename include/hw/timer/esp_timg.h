@@ -162,6 +162,12 @@ typedef struct ESPTimgState {
     /* Per-machine clock frequencies (Hz) */
     uint32_t xtal_freq;
     /*
+     * Set for SoCs where WDTCONFIG0 has no USE_XTAL bit because the MWDT is
+     * always clocked from XTAL, the source being selected in the clock/reset
+     * controller instead (ESP32-P4).
+     */
+    bool wdt_clk_is_xtal;
+    /*
      * Calibration CLK_SEL → oscillator frequency mapping.
      * Index = register CLK_SEL value, value = frequency in Hz.
      * Non-zero entries override the default (C3-compatible) mapping.

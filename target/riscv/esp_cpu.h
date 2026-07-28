@@ -46,6 +46,14 @@
 
 #define ESP_CPU_INT_LINES   31
 
+/*
+ * Highest CPU interrupt line the core can accept. CLIC-based SoCs place the
+ * external interrupts above the 16 core-local CLIC lines, so an IDF interrupt
+ * number N becomes CLIC line N + 16; the ESP32-P4 therefore drives lines up to
+ * 47. PLIC-based SoCs only ever drive lines 1..ESP_CPU_INT_LINES.
+ */
+#define ESP_CPU_INT_LINES_MAX   47
+
 
 /* Define a type that will be used to generate a cycle counter */
 typedef struct {
@@ -74,7 +82,7 @@ typedef struct EspRISCVCPU {
     /* Parent IRQ_M line */
     qemu_irq parent_irq;
     /* Bitmap of interrupt matrix output lines currently asserted on CPU inputs. */
-    uint32_t irq_lines;
+    uint64_t irq_lines;
     /* Espressif PMA (Physical Memory Attribute) extension. Set by SOC machine
      * code: the ESP32-C6 needs the PMA CSRs registered, the ESP32-C3 does not. */
     bool has_pma;
@@ -83,6 +91,15 @@ typedef struct EspRISCVCPU {
      * code that configures or probes them observes consistent state. */
     uint32_t pmacfg[16];   /* pmacfg0..15  at 0xBC0..0xBCF */
     uint32_t pmaaddr[16];  /* pmaaddr0..15 at 0xBD0..0xBDF */
+    /* Some ESP cores implement 32 PMP entries while the generic RISC-V target
+     * only models MAX_RISCV_PMPS (16).  Set by SOC machine code to register
+     * the upper half of the PMP CSR space. */
+    bool has_pmp32;
+    /* Backing storage for PMP entries 16..31.  Like PMA above, the values only
+     * round-trip; enforcement is left to the 16 entries the generic target
+     * models. */
+    uint32_t pmpcfg_hi[4];    /* pmpcfg4..7    at 0x3A4..0x3A7 */
+    uint32_t pmpaddr_hi[16];  /* pmpaddr16..31 at 0x3C0..0x3CF */
     /* ESP32-C6 (and similar) repurpose the standard RISC-V mie CSR (0x304) as
      * a per-line external-interrupt enable bitmap (MXIE), with the four CLINT
      * enables (USIE, MSIE, UTIE, MTIE) at their classic positions and the
@@ -100,6 +117,12 @@ typedef struct EspRISCVCPU {
      * can refresh the per-line IRQ assertion state. */
     void (*mie_changed_cb)(void *opaque);
     void *mie_changed_opaque;
+    /* On a CLIC core the per-line external-interrupt enable lives in the CLIC's
+     * clicintie[] bytes, which the intmatrix already honours, and mie has no
+     * MEIE bit at all. The ESP32-P4 mask ROM clears mie before handing control
+     * over, so without this the parent RISC-V dispatcher's `mie & mip` check on
+     * IRQ_M_EXT rejects every interrupt the intmatrix raises. */
+    bool clic_ext_irq;
 
     /* CLIC CSRs (CLIC-based ESP CPUs: ESP32-C5, ESP32-P4).  Same rationale
      * as the PMA storage above -- not modelled, but values must round-trip.

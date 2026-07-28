@@ -53,6 +53,14 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files(
     'esp32c3_systimer.c',
     'esp32c61_systimer.c',
 ))
+system_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files(
+    'esp_timg.c',
+    'esp32c3_timg.c',
+    'esp32p4_timg.c',
+    'esp_systimer.c',
+    'esp32c3_systimer.c',
+    'esp32p4_systimer.c',
+))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files(
     'esp_timg.c',
     'esp32c3_timg.c',

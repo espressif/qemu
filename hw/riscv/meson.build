@@ -33,6 +33,12 @@ riscv_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files(
         'esp32c61.c',
         'esp32c61_intmatrix.c',
 ))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files(
+        'esp32c3_clk.c',
+        'esp32p4_clk.c',
+        'esp32p4.c',
+        'esp32p4_intmatrix.c',
+))
 riscv_ss.add(when: 'CONFIG_RISCV_ESP32H2', if_true: files(
         'esp32c3_clk.c',
         'esp32h2_clk.c',

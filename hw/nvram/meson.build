@@ -13,6 +13,7 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32c3_efuse.c', 'e
 system_ss.add(when: 'CONFIG_RISCV_ESP32C5', if_true: files('esp32c3_efuse.c', 'esp32c5_efuse.c', 'esp_efuse.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files('esp32c3_efuse.c', 'esp32c61_efuse.c', 'esp_efuse.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files('esp32c3_efuse.c', 'esp32c6_efuse.c', 'esp_efuse.c'))
+system_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files('esp32c3_efuse.c', 'esp32p4_efuse.c', 'esp_efuse.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32H2', if_true: files('esp32c3_efuse.c', 'esp32h2_efuse.c', 'esp_efuse.c'))
 system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32s3_efuse.c', 'esp_efuse.c'))
 system_ss.add(when: 'CONFIG_XLNX_EFUSE_CRC', if_true: files('xlnx-efuse-crc.c'))

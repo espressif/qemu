@@ -192,6 +192,17 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files(
   'esp32c61_sha.c',
 ))
 
+system_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files(
+  'esp32p4_cache.c',
+  'esp32p4_spi_mem.c',
+  'esp32p4_psram_mem.c',
+  'esp32p4_hp_sys_clkrst.c',
+  'esp32p4_lp.c',
+  'esp_sha.c',
+  'esp32c3_sha.c',
+  'esp32p4_sha.c',
+))
+
 system_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files(
   'esp32c6_cache.c',
   'esp32c6_i2c_ana_mst.c',

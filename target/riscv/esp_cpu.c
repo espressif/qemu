@@ -22,9 +22,9 @@
 #include "exec/cpu-common.h"
 #include "esp_cpu.h"
 
-#define BIT_SET(reg, bit)   ((reg) & BIT(bit))
-#define CLEAR_BIT(reg, bit) do { (reg) &= ~BIT(bit); } while(0)
-#define SET_BIT(reg, bit)   do { (reg) |= BIT(bit); } while(0)
+#define BIT_SET(reg, bit)   ((reg) & BIT_ULL(bit))
+#define CLEAR_BIT(reg, bit) do { (reg) &= ~BIT_ULL(bit); } while(0)
+#define SET_BIT(reg, bit)   do { (reg) |= BIT_ULL(bit); } while(0)
 
 /* CSR-related */
 #define ESP_CPU_CSR_MTVT        0x307
@@ -56,6 +56,16 @@
 #define ESP_CPU_CSR_PMACFG15    0xBCF
 #define ESP_CPU_CSR_PMAADDR0    0xBD0
 #define ESP_CPU_CSR_PMAADDR15   0xBDF
+
+/* PMP entries 16..31. The generic RISC-V target stops at MAX_RISCV_PMPS (16),
+ * so these CSRs are absent from its table and any access traps as an illegal
+ * instruction. The ESP32-P4 rev3 startup code drives entries up to 31 --
+ * see components/esp_hw_support/port/esp32p4/cpu_region_protect.c --
+ * so accept and store them here. */
+#define ESP_CPU_CSR_PMPCFG4     0x3A4
+#define ESP_CPU_CSR_PMPCFG7     0x3A7
+#define ESP_CPU_CSR_PMPADDR16   0x3C0
+#define ESP_CPU_CSR_PMPADDR31   0x3CF
 
 /* CLIC CSRs (ESP32-C5 and other CLIC-capable ESP cores). */
 #define ESP_CPU_CSR_UTVT          0x007
@@ -160,6 +170,10 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = s->pmacfg[csrno - ESP_CPU_CSR_PMACFG0];
     } else if (csrno >= ESP_CPU_CSR_PMAADDR0 && csrno <= ESP_CPU_CSR_PMAADDR15) {
         *ret_value = s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0];
+    } else if (csrno >= ESP_CPU_CSR_PMPCFG4 && csrno <= ESP_CPU_CSR_PMPCFG7) {
+        *ret_value = s->pmpcfg_hi[csrno - ESP_CPU_CSR_PMPCFG4];
+    } else if (csrno >= ESP_CPU_CSR_PMPADDR16 && csrno <= ESP_CPU_CSR_PMPADDR31) {
+        *ret_value = s->pmpaddr_hi[csrno - ESP_CPU_CSR_PMPADDR16];
     } else if (csrno >= ESP_CPU_CSR_MHCR_FIRST && csrno <= ESP_CPU_CSR_MHCR_LAST) {
         *ret_value = s->mhcr[csrno - ESP_CPU_CSR_MHCR_FIRST];
     } else if (csrno == ESP_CPU_CSR_MEXSTATUS) {
@@ -201,6 +215,10 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
          * 128-byte granularity (bottom bits hardwired 0); enforce per-SOC
          * masking here if/when this code is exercised on a CLIC SOC. */
         s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_PMPCFG4 && csrno <= ESP_CPU_CSR_PMPCFG7) {
+        s->pmpcfg_hi[csrno - ESP_CPU_CSR_PMPCFG4] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_PMPADDR16 && csrno <= ESP_CPU_CSR_PMPADDR31) {
+        s->pmpaddr_hi[csrno - ESP_CPU_CSR_PMPADDR16] = (uint32_t)new_value;
     } else if (csrno >= ESP_CPU_CSR_MHCR_FIRST && csrno <= ESP_CPU_CSR_MHCR_LAST) {
         s->mhcr[csrno - ESP_CPU_CSR_MHCR_FIRST] = (uint32_t)new_value;
     } else if (csrno == ESP_CPU_CSR_MEXSTATUS) {
@@ -317,8 +335,7 @@ static void esp_cpu_irq_handler(void *opaque, int n, int level)
 {
     EspRISCVCPU *cpu = (EspRISCVCPU*) opaque;
 
-    /* Lines go from 1 to 31 included */
-    assert(n <= ESP_CPU_INT_LINES);
+    assert(n <= ESP_CPU_INT_LINES_MAX);
 
     if (n == 0) {
         return;
@@ -336,7 +353,7 @@ static void esp_cpu_irq_handler(void *opaque, int n, int level)
 
 static uint32_t esp_cpu_select_irq_cause(EspRISCVCPU *cpu)
 {
-    for (uint32_t i = 1; i <= ESP_CPU_INT_LINES; i++) {
+    for (uint32_t i = 1; i <= ESP_CPU_INT_LINES_MAX; i++) {
         if (BIT_SET(cpu->irq_lines, i)) {
             return i;
         }
@@ -396,14 +413,15 @@ static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
      */
     CPURISCVState *env = &cpu->parent_obj.env;
     target_ulong saved_mie = 0;
-    if (cpu->mie_as_bitmap) {
+    const bool force_meie = cpu->mie_as_bitmap || cpu->clic_ext_irq;
+    if (force_meie) {
         saved_mie = env->mie;
         env->mie |= MIP_MEIP;
     }
 
     const bool accepted = klass->parent_exec_interrupt(cs, interrupt_request);
 
-    if (cpu->mie_as_bitmap) {
+    if (force_meie) {
         env->mie = saved_mie;
     }
 
@@ -467,6 +485,8 @@ static void esp_cpu_reset(void *opaque)
     cpu->mie_enabled = 0;
     memset(cpu->pmacfg, 0, sizeof(cpu->pmacfg));
     memset(cpu->pmaaddr, 0, sizeof(cpu->pmaaddr));
+    memset(cpu->pmpcfg_hi, 0, sizeof(cpu->pmpcfg_hi));
+    memset(cpu->pmpaddr_hi, 0, sizeof(cpu->pmpaddr_hi));
     memset(cpu->mhcr, 0, sizeof(cpu->mhcr));
     cpu->mexstatus = 0;
     cpu->utvt = 0;
@@ -502,6 +522,15 @@ static void esp_cpu_realize(DeviceState *dev, Error **errp)
      * implement PMA in hardware. */
     if (espcpu->has_pma) {
         for (int i = ESP_CPU_CSR_PMACFG0; i <= ESP_CPU_CSR_PMAADDR15; i++) {
+            riscv_set_csr_ops(i, &esp_cpu_csr_ops);
+        }
+    }
+
+    if (espcpu->has_pmp32) {
+        for (int i = ESP_CPU_CSR_PMPCFG4; i <= ESP_CPU_CSR_PMPCFG7; i++) {
+            riscv_set_csr_ops(i, &esp_cpu_csr_ops);
+        }
+        for (int i = ESP_CPU_CSR_PMPADDR16; i <= ESP_CPU_CSR_PMPADDR31; i++) {
             riscv_set_csr_ops(i, &esp_cpu_csr_ops);
         }
     }
@@ -559,7 +588,8 @@ static void esp_cpu_init(Object *obj)
     /* Initialize the IRQ lines */
     qdev_init_gpio_in_named_with_opaque(DEVICE(s),
                                         esp_cpu_irq_handler, s,
-                                        ESP_CPU_IRQ_LINES_NAME, ESP_CPU_INT_LINES + 1);
+                                        ESP_CPU_IRQ_LINES_NAME,
+                                        ESP_CPU_INT_LINES_MAX + 1);
 
     /* Initialize the parent IRQ line that will be used to notify the parent class when an interrupt
      * request is incoming. */
@@ -629,6 +659,8 @@ static void esp_cpu_init(Object *obj)
 static Property riscv_harts_props[] = {
     DEFINE_PROP_UINT32("hartid-base", EspRISCVCPU, hartid_base, 0),
     DEFINE_PROP_BOOL("has-pma", EspRISCVCPU, has_pma, false),
+    DEFINE_PROP_BOOL("has-pmp32", EspRISCVCPU, has_pmp32, false),
+    DEFINE_PROP_BOOL("clic-ext-irq", EspRISCVCPU, clic_ext_irq, false),
     DEFINE_PROP_BOOL("mie-as-bitmap", EspRISCVCPU, mie_as_bitmap, false),
     DEFINE_PROP_END_OF_LIST(),
 };

@@ -264,12 +264,15 @@ static void esp_gdma_get_restart_buffer(ESPGdmaState *s, uint32_t chan, uint32_t
  */
 bool esp_gdma_get_channel_periph(ESPGdmaState *s, GdmaPeripheral periph, int dir, uint32_t* chan)
 {
+    /* If the state, the peripheral or the direction is invalid, return directly.
+     * The state must be checked before dereferencing it to get the class. */
+    if (s == NULL || chan == NULL || periph > GDMA_LAST || dir < 0 || dir >= ESP_GDMA_CONF_COUNT) {
+        return false;
+    }
+
     const ESPGdmaClass* class = ESP_GDMA_GET_CLASS(s);
 
-    /* If the state, the peripheral or the direction is invalid, return directly */
-    if (s == NULL || chan == NULL || periph > GDMA_LAST || dir < 0 || dir >= ESP_GDMA_CONF_COUNT ||
-        (class->is_periph_invalid && class->is_periph_invalid(s, periph)))
-    {
+    if (class->is_periph_invalid && class->is_periph_invalid(s, periph)) {
         return false;
     }
 

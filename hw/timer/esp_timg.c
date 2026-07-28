@@ -155,7 +155,9 @@ static inline uint64_t esp_wdt_ext_clk_frequency(ESPWdtState* wdt)
 {
     ESPTimgState *s = container_of(wdt, ESPTimgState, wdt);
     uint32_t xtal = s->xtal_freq ? s->xtal_freq : ESP_XTAL_CLK;
-    return FIELD_EX32(wdt->config0, TIMG_WDTCONFIG0, USE_XTAL) ? xtal : ESP_APB_CLK;
+    const bool use_xtal = s->wdt_clk_is_xtal ||
+        FIELD_EX32(wdt->config0, TIMG_WDTCONFIG0, USE_XTAL);
+    return use_xtal ? xtal : ESP_APB_CLK;
 }
 
 static inline bool esp_wdt_is_writable(ESPWdtState* wdt)
@@ -770,6 +772,7 @@ static void esp_timg_reset_hold(Object *obj, ResetType type)
     s->wdt.prescaler = 1;
     s->wdt.raw_st = 0;
     s->wdt.int_enabled = 0;
+    s->wdt.counter.frequency = esp_wdt_ext_clk_frequency(&s->wdt);
 
     /* Reset Timer0 */
     esp_virtual_counter_reset(&s->t0.counter);
