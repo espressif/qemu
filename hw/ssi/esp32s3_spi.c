@@ -457,6 +457,10 @@ static void esp32s3_spi_reset_hold(Object *obj, ResetType type)
 {
     ESP32S3SpiState *s = ESP32S3_SPI(obj);
     memset(s->data_reg, 0, ESP32S3_SPI_BUF_WORDS * sizeof(uint32_t));
+
+    s->misc = FIELD_DP32(s->misc, SPI_MEM_MISC, CS0_DIS, 0);
+    s->misc = FIELD_DP32(s->misc, SPI_MEM_MISC, CS1_DIS, 1);
+
     s->mem_ctrl1 = FIELD_DP32(s->mem_ctrl1, SPI_MEM_CTRL1, CS_HOLD_DLY_RES, 0x3ff);
     s->mem_clock = FIELD_DP32(s->mem_clock, SPI_MEM_CLOCK, CLKCNT_N, 3);
     s->mem_clock = FIELD_DP32(s->mem_clock, SPI_MEM_CLOCK, CLKCNT_H, 1);
