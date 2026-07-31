@@ -29,6 +29,7 @@ riscv_ss.add(when: 'CONFIG_RISCV_ESP32C5', if_true: files('esp_cpu.c'))
 riscv_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files('esp_cpu.c'))
 riscv_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files('esp_cpu.c'))
 riscv_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files('esp_cpu.c'))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32H4', if_true: files('esp_cpu.c'))
 riscv_ss.add(when: 'CONFIG_RISCV_ESP32H2', if_true: files('esp_cpu.c'))
 
 riscv_system_ss = ss.source_set()

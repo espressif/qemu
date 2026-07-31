@@ -184,13 +184,13 @@ static void esp_wdt_cb(void* opaque)
         return;
     }
 
-    /* Check which action must be taken for the current stage */
-    if (conf == ESP_WDT_INTERRUPT) {
-        wdt->raw_st = 1;
-        if (wdt->int_enabled) {
-            qemu_irq_raise(wdt->interrupt_irq);
-        }
-    } else if (conf == ESP_WDT_RESET_CPU || conf == ESP_WDT_RESET_SYS) {
+    /*
+     * Advance/schedule the next stage before raising IRQs. qemu_irq_raise() may
+     * longjmp out of this timer callback via cpu_loop_exit(), which would
+     * otherwise skip arming stage1 (RESET) after stage0 (INT) — breaking MWDT
+     * tests that rely on the interrupt-then-reset sequence.
+     */
+    if (conf == ESP_WDT_RESET_CPU || conf == ESP_WDT_RESET_SYS) {
         qemu_irq_raise(wdt->reset_irq);
         /* Do not schedule anything if we have to reset the machine */
         return;
@@ -208,6 +208,13 @@ static void esp_wdt_cb(void* opaque)
         esp_virtual_counter_alarm_in_ticks(&wdt->counter, wdt->stage[new_stage] - elapsed);
     } else {
         esp_virtual_counter_alarm_in_ticks(&wdt->counter, wdt->stage[new_stage]);
+    }
+
+    if (conf == ESP_WDT_INTERRUPT) {
+        wdt->raw_st = 1;
+        if (wdt->int_enabled) {
+            qemu_irq_raise(wdt->interrupt_irq);
+        }
     }
 }
 

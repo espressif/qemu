@@ -85,6 +85,13 @@
  * cores; we keep both names for clarity at the call sites. */
 #define ESP_CPU_CSR_MEXSTATUS     ESP_CPU_CSR_PCMR_M
 
+/* Espressif DSP extension CSRs (see IDF riscv/csr_dsp.h). */
+#define ESP_CPU_CSR_DSP_STATE     0x7f3
+#define ESP_CPU_CSR_DSP_XACC_L    0x806
+#define ESP_CPU_CSR_DSP_XACC_H    0x807
+#define ESP_CPU_CSR_DSP_SAR       0x809
+#define ESP_CPU_CSR_DSP_STATUS    0x80a
+
 
 static RISCVException esp_cpu_csr_predicate(CPURISCVState *env, int csrno) {
     return RISCV_EXCP_NONE;
@@ -192,6 +199,16 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = s->uintstatus;
     } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
         *ret_value = s->mintstatus;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATE) {
+        *ret_value = s->dsp_state;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_L) {
+        *ret_value = s->dsp_xacc_l;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_H) {
+        *ret_value = s->dsp_xacc_h;
+    } else if (csrno == ESP_CPU_CSR_DSP_SAR) {
+        *ret_value = s->dsp_sar;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATUS) {
+        *ret_value = s->dsp_status;
     } else {
         *ret_value = 0;
     }
@@ -237,6 +254,16 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
         s->uintstatus = new_value;
     } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
         s->mintstatus = new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATE) {
+        s->dsp_state = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_L) {
+        s->dsp_xacc_l = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_H) {
+        s->dsp_xacc_h = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_SAR) {
+        s->dsp_sar = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATUS) {
+        s->dsp_status = (uint32_t)new_value;
     }
 
     return RISCV_EXCP_NONE;
@@ -493,6 +520,11 @@ static void esp_cpu_reset(void *opaque)
     memset(cpu->pmpaddr_hi, 0, sizeof(cpu->pmpaddr_hi));
     memset(cpu->mhcr, 0, sizeof(cpu->mhcr));
     cpu->mexstatus = 0;
+    cpu->dsp_state = 0;
+    cpu->dsp_xacc_l = 0;
+    cpu->dsp_xacc_h = 0;
+    cpu->dsp_sar = 0;
+    cpu->dsp_status = 0;
     cpu->utvt = 0;
     cpu->mtvt = 0;
     cpu->mnxti = 0;
@@ -634,6 +666,15 @@ static void esp_cpu_init(Object *obj)
     riscv_set_csr_ops(ESP_CPU_CSR_MINTTHRESH,   &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_UINTSTATUS,   &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_MINTSTATUS,   &esp_cpu_csr_ops);
+
+    /* DSP extension CSRs (ESP32-H4 / P4).  Always registered; non-DSP SOCs
+     * never touch them.  Default state 0 (Off) lets ISR probes skip the
+     * DSP save/restore path. */
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_STATE,  &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_XACC_L, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_XACC_H, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_SAR,    &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_STATUS, &esp_cpu_csr_ops);
 
     /* Machine Hardware Configuration CSRs (ESP32-C5 branch predictor, etc.)
      * 0x7C0..0x7CF; backed by `mhcr[16]`. */

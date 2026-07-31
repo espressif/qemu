@@ -172,6 +172,26 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C5', if_true: files(
   'esp32c5_sha.c',
 ))
 
+
+system_ss.add(when: 'CONFIG_RISCV_ESP32H4', if_true: files(
+  'esp32c5_cache.c',
+  'esp32h4_cache.c',
+  'esp32c5_i2c_ana_mst.c',
+  'esp32h4_i2c_ana_mst.c',
+  'esp32c5_intpri.c',
+  'esp32h4_intpri.c',
+  'esp32c5_jtag.c',
+  'esp32h4_jtag.c',
+  'esp32h4_lp.c',
+  'esp32c5_modem.c',
+  'esp32h4_modem.c',
+  'esp32h4_pcr.c',
+  'esp32c5_spi_mem.c',
+  'esp32h4_spi_mem.c',
+  'esp_sha.c',
+  'esp32c3_sha.c',
+  'esp32h4_sha.c',
+))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files(
   'esp32c5_cache.c',
   'esp32c61_cache.c',

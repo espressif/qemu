@@ -146,6 +146,16 @@ typedef struct EspRISCVCPU {
 
     /* Run-stalled or held in reset by the SoC. Interrupts do not wake the core. */
     bool stalled;
+
+    /* Espressif DSP extension CSRs (ESP32-H4 / P4).  ISR prologues probe
+     * CSR_DSP_STATE_REG (0x7f3); without a stub that access illegal-traps
+     * and the guest hangs in the panic loop.  State 0 == Off is enough for
+     * the probe; the remaining CSRs only need to round-trip. */
+    uint32_t dsp_state;    /* 0x7f3 */
+    uint32_t dsp_xacc_l;   /* 0x806 */
+    uint32_t dsp_xacc_h;   /* 0x807 */
+    uint32_t dsp_sar;      /* 0x809 */
+    uint32_t dsp_status;   /* 0x80a */
 } EspRISCVCPU;
 
 /**
