@@ -40,6 +40,8 @@
 #include "hw/timer/esp32c3_timg.h"
 #include "hw/timer/esp32c3_systimer.h"
 #include "hw/ssi/esp32c3_spi.h"
+#include "hw/ssi/esp32c3_spi2.h"
+#include "hw/sd/sd.h"
 #include "hw/misc/esp32c3_rtc_cntl.h"
 #include "hw/misc/esp32c3_aes.h"
 #include "hw/misc/esp32c3_rsa.h"
@@ -48,6 +50,7 @@
 #include "hw/misc/esp32c3_xts_aes.h"
 #include "hw/misc/esp32c3_jtag.h"
 #include "hw/dma/esp32c3_gdma.h"
+#include "hw/audio/esp32c3_i2s.h"
 #include "hw/display/esp_rgb.h"
 #include "hw/net/can/esp32c3_twai.h"
 
@@ -86,10 +89,15 @@ struct Esp32C3MachineState {
     ESP32C3TimgState timg[2];
     ESP32C3SysTimerState systimer;
     ESP32C3SpiState spi1;
+    ESP32C3Spi2State spi2;
     ESP32C3RtcCntlState rtccntl;
     ESP32C3UsbJtagState jtag;
     ESPRgbState rgb;
     Esp32C3TWAIState twai;
+    Esp32C3I2SState i2s0;
+
+    /* SD card ssi-sd device for GPIO CS routing */
+    DeviceState *sd_ssi_dev;
 };
 
 /* Fake register used by ESP-IDF application to determine whether the code is running on real hardware or on QEMU */
@@ -281,27 +289,31 @@ static void esp32c3_load_firmware(MachineState *machine)
     }
 
     if (bios_filename) {
-        /* Since EspRISCVCPU doens't have a RISCVHartArrayState field, let's bake one on the stack. It will only be
-         * used to get the type of the RISC-V CPU (32 or 64 bits) in `riscv_load_kernel` */
-        RISCVHartArrayState hart = {
-            .harts = &ms->soc.parent_obj,
-            .num_harts = 1,
-        };
-
-        /* The function `riscv_load_kernel` won't load the ELF file at its entry point, so we have to look
-         * for the ELF entry point manually here */
         uint64_t elf_entry = ESP32C3_RESET_ADDRESS;
 
-        /* The entry point address should be populated regardless of the return value */
-        load_elf_ram_sym(bios_filename, NULL, NULL, NULL,
+        /* Try to load as ELF first */
+        if (load_elf_ram_sym(bios_filename, NULL, NULL, NULL,
                         &elf_entry, NULL, NULL, NULL, 0,
-                        EM_RISCV, 1, 0, NULL, false, NULL);
+                        EM_RISCV, 1, 0, NULL, true, NULL) > 0) {
+            qemu_log("Loaded ELF '%s' at entry 0x%08" PRIx64 "\n", bios_filename, elf_entry);
+        } else {
+            /* Not an ELF, try as raw binary at reset address */
+            int size = load_image_targphys_as(bios_filename, ESP32C3_RESET_ADDRESS,
+                                              0x60000, CPU(&ms->soc)->as);
+            if (size < 0) {
+                error_report("Error: could not load firmware '%s'", bios_filename);
+                exit(1);
+            }
+            qemu_log("Loaded raw binary '%s' (%d bytes) at 0x%08x\n",
+                     bios_filename, size, ESP32C3_RESET_ADDRESS);
+            elf_entry = ESP32C3_RESET_ADDRESS;
+        }
 
-        /* On failure, riscv_load_kernel exits the program */
-        qemu_log("Loading kernel at address 0x%08" PRIx64 "\n", elf_entry);
-        riscv_load_kernel(machine, &hart, elf_entry, false, NULL);
         if (elf_entry != ESP32C3_RESET_ADDRESS) {
+            qemu_log("Setting resetvec to 0x%08" PRIx64 "\n", elf_entry);
             qdev_prop_set_uint64(DEVICE(&ms->soc), "resetvec", elf_entry);
+        } else {
+            qemu_log("Not changing resetvec, elf_entry == ESP32C3_RESET_ADDRESS\n");
         }
     } else {
         /* Open and load the "bios", which is the ROM binary, also named "first stage bootloader" */
@@ -381,6 +393,12 @@ static void esp32c3_machine_init(MachineState *machine)
 
     qdev_realize(DEVICE(&ms->soc), NULL, &error_fatal);
 
+    /* Initialize stack pointer to top of DRAM (required when loading ELF directly) */
+    CPURISCVState *env = &ms->soc.parent_obj.env;
+    /* DRAM ends at 0x3FCE0000, set SP slightly below that */
+    env->gpr[2] = memmap[ESP32C3_MEMREGION_DRAM].base + memmap[ESP32C3_MEMREGION_DRAM].size - 16;
+    qemu_log("Initialized SP to 0x%08" PRIx64 "\n", (uint64_t)env->gpr[2]);
+
     memory_region_init_io(&ms->iomem, OBJECT(&ms->soc), &esp32c3_io_ops,
                           NULL, "esp32c3.iomem", 0xd1000);
     memory_region_add_subregion(sys_mem, ESP32C3_IO_START_ADDR, &ms->iomem);
@@ -420,10 +438,12 @@ static void esp32c3_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C3_TIMG);
     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C3_SYSTIMER);
     object_initialize_child(OBJECT(machine), "spi1", &ms->spi1, TYPE_ESP32C3_SPI);
+    object_initialize_child(OBJECT(machine), "spi2", &ms->spi2, TYPE_ESP32C3_SPI2);
     object_initialize_child(OBJECT(machine), "rtccntl", &ms->rtccntl, TYPE_ESP32C3_RTC_CNTL);
     object_initialize_child(OBJECT(machine), "jtag", &ms->jtag, TYPE_ESP32C3_JTAG);
     object_initialize_child(OBJECT(machine), "rgb", &ms->rgb, TYPE_ESP_RGB);
     object_initialize_child(OBJECT(machine), "twai", &ms->twai, TYPE_ESP32C3_TWAI);
+    object_initialize_child(OBJECT(machine), "i2s0", &ms->i2s0, TYPE_ESP32C3_I2S);
 
     /* Realize all the I/O peripherals we depend on */
 
@@ -476,6 +496,50 @@ static void esp32c3_machine_init(MachineState *machine)
         }
     }
 
+    /* SPI2 controller (GPSPI2 - General Purpose SPI for SD card) */
+    {
+        /* Link SPI2 to GDMA for DMA-mode transfers */
+        ms->spi2.gdma = ESP_GDMA(&ms->gdma);
+
+        sysbus_realize(SYS_BUS_DEVICE(&ms->spi2), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->spi2), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_SPI2_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->spi2), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_SPI2_INTR_SOURCE));
+
+        /* Attach SD card if if=sd,index=1 drive is specified.
+         * Use -drive file=xxx.img,if=sd,index=1,format=raw to attach an SD image.
+         * We use index=1 (unit=1) to avoid conflict with QEMU's default SD drive at unit=0. */
+        DriveInfo *sd_dinfo = drive_get(IF_SD, 0, 1);
+        fprintf(stderr, "Checking for SD card drive: %p\n", sd_dinfo);
+        if (sd_dinfo) {
+            DeviceState *card_dev;
+            BusState *spi_bus = qdev_get_child_bus(DEVICE(&ms->spi2), "spi");
+
+            qemu_log("Adding SD card device to SPI2\n");
+
+            /* Create ssi-sd bridge which connects SPI bus to SD card */
+            DeviceState *ssi_sd = qdev_new("ssi-sd");
+            qdev_realize_and_unref(ssi_sd, spi_bus, &error_fatal);
+
+            /* Create the SD card (SPI variant) and attach to ssi-sd */
+            card_dev = qdev_new(TYPE_SD_CARD_SPI);
+            qdev_prop_set_drive_err(card_dev, "drive", blk_by_legacy_dinfo(sd_dinfo), &error_fatal);
+            /* Enable relaxed SPI mode for ESP-IDF SDSPI driver compatibility */
+            qdev_prop_set_bit(card_dev, "spi-relaxed-mode", true);
+            qdev_realize_and_unref(card_dev,
+                                   qdev_get_child_bus(ssi_sd, "sd-bus"),
+                                   &error_fatal);
+
+            /* Connect CS line from SPI2 hardware CS to ssi-sd (fallback) */
+            qdev_connect_gpio_out_named(DEVICE(&ms->spi2), SSI_GPIO_CS, 0,
+                                        qdev_get_gpio_in_named(ssi_sd, SSI_GPIO_CS, 0));
+
+            /* Store ssi_sd reference for GPIO CS connection after GPIO is realized */
+            ms->sd_ssi_dev = ssi_sd;
+        }
+    }
+
     for (int i = 0; i < ESP32C3_UART_COUNT; ++i) {
         const hwaddr uart_base[] = { DR_REG_UART_BASE, DR_REG_UART1_BASE };
         sysbus_realize(SYS_BUS_DEVICE(&ms->uart[i]), &error_fatal);
@@ -490,6 +554,15 @@ static void esp32c3_machine_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&ms->gpio), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->gpio), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
+
+        /* Connect GPIO 10 to SD card CS (ssi-sd device) if SD card is attached.
+         * The ESP-IDF SDSPI driver controls CS via GPIO, not hardware SPI CS.
+         * GPIO 10 is the CS pin used by the OROBLANCO_ONE_C3 board in QEMU mode. */
+        if (ms->sd_ssi_dev) {
+            qemu_log("Connecting GPIO 10 to SD card CS\n");
+            qdev_connect_gpio_out_named(DEVICE(&ms->gpio), ESP32C3_GPIO_OUT_IRQ, 10,
+                                        qdev_get_gpio_in_named(ms->sd_ssi_dev, SSI_GPIO_CS, 0));
+        }
     }
 
     /* (Extmem) Cache realization */
@@ -583,6 +656,17 @@ static void esp32c3_machine_init(MachineState *machine)
 
     }
 
+    /* I2S0 realization */
+    {
+        ms->i2s0.gdma = ESP_GDMA(&ms->gdma);
+        sysbus_realize(SYS_BUS_DEVICE(&ms->i2s0), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->i2s0), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_I2S0_BASE, mr, 0);
+        /* The C3 has a single I2S; its interrupt source is named I2S1 in the matrix. */
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2s0), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_I2S1_INTR_SOURCE));
+    }
+
     /* SHA realization */
     {
         ms->sha.parent.gdma = ESP_GDMA(&ms->gdma);
@@ -670,6 +754,13 @@ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
     mc->default_cpus = 1;
     // 0x4f600
     mc->default_ram_size = 400 * 1024;
+    /* Disable default devices that don't apply to embedded MCU.
+     * We allow sdcard via -drive if=sd,index=1, but disable the default
+     * empty SD card at index=0 to avoid conflicts. */
+    mc->no_floppy = true;
+    mc->no_cdrom = true;
+    mc->no_parallel = true;
+    mc->no_sdcard = true;  /* Disable default SD card - user must specify via -drive if=sd */
 }
 
 /* Create a new type of machine ("child class") */

@@ -144,9 +144,13 @@ static DmaRegister esp32c3_generic_reg(uint32_t reg)
 
 static uint32_t esp32c3_read_int_register(ESP32C3GdmaState *s, hwaddr addr)
 {
-    /* Check which channel and which direction is being written to */
-    const uint32_t chan = addr / DMA_DIR_REGS_SIZE;
-    const uint32_t reg  = addr % DMA_DIR_REGS_SIZE;
+    /* The interrupt registers are packed 4 per channel (RAW/ST/ENA/CLR), so the
+     * per-channel stride is DMA_INT_CHAN_REGS_SIZE (0x10), NOT DMA_DIR_REGS_SIZE
+     * (which is the much larger per-direction channel-config stride). Using the
+     * wrong stride keeps chan stuck at 0 and lets reg run past the 4-entry table
+     * for channels >= 1 (e.g. when SPI2 and I2S occupy different GDMA channels). */
+    const uint32_t chan = addr / DMA_INT_CHAN_REGS_SIZE;
+    const uint32_t reg  = addr % DMA_INT_CHAN_REGS_SIZE;
     const uint32_t generic_reg = esp32c3_generic_int_reg(reg);
 
     uint32_t in_value  = esp_gdma_read_chan_register(&s->parent, ESP_GDMA_IN_IDX, chan, generic_reg);
@@ -204,9 +208,10 @@ static uint64_t esp32c3_gdma_read(void *opaque, hwaddr addr, unsigned int size)
 
 static void esp32c3_write_int_register(ESP32C3GdmaState *s, hwaddr addr, uint32_t value)
 {
-    /* Check which channel and which direction is being written to */
-    const uint32_t chan = addr / DMA_DIR_REGS_SIZE;
-    const uint32_t reg  = addr % DMA_DIR_REGS_SIZE;
+    /* Interrupt registers are packed 4 per channel; use the 0x10 int stride
+     * (see esp32c3_read_int_register for the rationale). */
+    const uint32_t chan = addr / DMA_INT_CHAN_REGS_SIZE;
+    const uint32_t reg  = addr % DMA_INT_CHAN_REGS_SIZE;
     uint32_t in_value = 0;
     uint32_t out_value = 0;
 

@@ -86,6 +86,13 @@ static inline void esp32c3_write_mmu_value(ESP32C3CacheState *s, hwaddr reg_addr
                 xts_aes_class->decrypt(s->xts_aes, physical_address, cache_data, ESP32C3_PAGE_SIZE);
             }
         }
+        /* The dcache region (and its icache alias) is a rom_device that may
+         * hold code TCG has already translated; writing its backing RAM
+         * directly leaves those translations stale, so a remapped page would
+         * execute a mix of old and new code (e.g. booting a freshly written
+         * ota_0 app after running the factory app crashes on entry). Flush
+         * the range so the TBs are invalidated and the new bytes are used. */
+        memory_region_flush_rom_device(&s->dcache, virtual_address, ESP32C3_PAGE_SIZE);
         s->mmu[index].val = e.val;
     }
 }

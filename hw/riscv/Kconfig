@@ -119,6 +119,8 @@ config RISCV_ESP32C3
     select OPENCORES_ETH
     select UNIMP
     select ESP_RGB
+    select SSI
+    select SSI_SD
 
 config RISCV_ESP32C6
     bool

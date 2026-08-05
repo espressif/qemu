@@ -158,6 +158,22 @@ bool esp_gdma_get_channel_periph(ESPGdmaState *s, GdmaPeripheral periph, int dir
 bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint32_t size);
 bool esp_gdma_write_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint32_t size);
 
+/**
+ * @brief Peek at the number of valid bytes (`length`) advertised by the head OUT descriptor
+ *        of the given channel, without consuming/advancing it.
+ *
+ * Useful for a continuous peripheral (e.g. I2S TX) that wants to drain exactly one DMA
+ * buffer per step: read the length here, then call esp_gdma_read_channel() with it so that
+ * exactly one descriptor (and thus one OUT_EOF) is processed.
+ *
+ * @param s    GDMA state
+ * @param chan OUT channel index
+ * @param len  Filled with the head descriptor's `length` field on success
+ *
+ * @returns true if a descriptor could be read, false otherwise
+ */
+bool esp_gdma_peek_length(ESPGdmaState *s, uint32_t chan, uint32_t *len);
+
 
 /**
  * @brief Function only meant to be used by inherited classes
