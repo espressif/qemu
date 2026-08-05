@@ -35,6 +35,7 @@
 #include "hw/misc/esp32p4_spi_mem.h"
 #include "hw/misc/esp32p4_psram_mem.h"
 #include "hw/misc/esp32p4_hp_sys_clkrst.h"
+#include "hw/misc/esp32p4_hp_system.h"
 #include "hw/misc/esp32p4_lp.h"
 #include "hw/misc/esp32p4_sha.h"
 #include "hw/nvram/esp32p4_efuse.h"
@@ -101,6 +102,7 @@ struct Esp32P4MachineState {
     ESP32P4PsramMemState psram_mem;
     ESP32P4SpiState spi1;
     ESP32P4HpSysClkrstState hp_sys_clkrst;
+    ESP32P4HpSystemState hp_system;
     ESP32P4LpState lp;
     ESP32P4ShaState sha;
     ESP32P4EfuseState efuse;
@@ -419,6 +421,8 @@ static void esp32p4_machine_init(MachineState *machine)
                             TYPE_ESP32P4_SPI);
     object_initialize_child(OBJECT(machine), "hp_sys_clkrst",
                             &ms->hp_sys_clkrst, TYPE_ESP32P4_HP_SYS_CLKRST);
+    object_initialize_child(OBJECT(machine), "hp_system",
+                            &ms->hp_system, TYPE_ESP32P4_HP_SYSTEM);
     object_initialize_child(OBJECT(machine), "lp", &ms->lp, TYPE_ESP32P4_LP);
     object_initialize_child(OBJECT(machine), "sha", &ms->sha, TYPE_ESP32P4_SHA);
     object_initialize_child(OBJECT(machine), "efuse", &ms->efuse,
@@ -521,6 +525,20 @@ static void esp32p4_machine_init(MachineState *machine)
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->hp_sys_clkrst), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_HP_SYS_CLKRST_BASE,
                                             mr, 0);
+    }
+
+    /* HP_SYSTEM — CPU_INT_FROM_CPU_x software IRQ sources */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ms->hp_system), &error_fatal);
+        MemoryRegion *mr =
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->hp_system), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_HP_SYS_BASE, mr, 0);
+
+        for (int i = 0; i < ESP32P4_HP_SYSTEM_CPU_INTR_COUNT; i++) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(&ms->hp_system), i,
+                               qdev_get_gpio_in(intmatrix_dev,
+                                                P4_ETS_FROM_CPU_INTR0_SOURCE + i));
+        }
     }
 
     /* LP domain */
