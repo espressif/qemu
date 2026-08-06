@@ -1636,6 +1636,8 @@ static RISCVException write_mstatus(CPURISCVState *env, int csrno,
         mask |= (MSTATUS_MPELP | MSTATUS_SPELP);
     }
 
+    mask &= env->mstatus_warl_mask;
+
     mstatus = (mstatus & ~mask) | (val & mask);
 
     env->mstatus = mstatus;

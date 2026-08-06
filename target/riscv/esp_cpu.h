@@ -24,6 +24,21 @@
 
 #define ESP_CPU_IRQ_LINES_NAME "espressif-cpu-irq-lines"
 
+/*
+ * mstatus WARL masks for Espressif RISC-V cores with restricted mstatus.
+ * Only the bits listed here are writable by the guest; all others (including
+ * MPRV, SUM, MXR, SIE, SPIE, SPP, TVM, TSR) are hardwired 0 on silicon.
+ */
+
+/* ESP32-C3: MIE(3), MPIE(7), MPP(12:11), TW(21) */
+#define ESP32C3_MSTATUS_WARL_MASK  (MSTATUS_MIE | MSTATUS_MPIE | \
+                                    MSTATUS_MPP | MSTATUS_TW)
+
+/* ESP32-C6 / ESP32-H2: UIE(0), MIE(3), UPIE(4), MPIE(7), MPP(12:11), TW(21) */
+#define ESP32C6_MSTATUS_WARL_MASK  (MSTATUS_MIE | MSTATUS_MPIE | \
+                                    MSTATUS_MPP | MSTATUS_TW | \
+                                    (1UL << 0) | (1UL << 4))
+
 #define TYPE_ESP_RISCV_CPU      "espressif-riscv-cpu"
 #define ESP_CPU(obj)            OBJECT_CHECK(EspRISCVCPU, (obj), TYPE_ESP_RISCV_CPU)
 #define ESP_CPU_GET_CLASS(obj)  OBJECT_GET_CLASS(EspRISCVCPUClass, obj, TYPE_ESP_RISCV_CPU)

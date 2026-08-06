@@ -265,6 +265,14 @@ struct CPUArchState {
      */
     uint64_t mstatus;
 
+    /*
+     * Per-CPU WARL mask for mstatus: only bits set here are writable by the
+     * guest via CSR writes.  Default UINT64_MAX (all bits writable, generic
+     * RISC-V behavior).  Espressif cores (C3/C6/H2) restrict this to match
+     * silicon where MPRV and S-mode bits are hardwired 0.
+     */
+    uint64_t mstatus_warl_mask;
+
     uint64_t mip;
     /*
      * MIP contains the software writable version of SEIP ORed with the
