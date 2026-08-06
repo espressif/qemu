@@ -254,6 +254,9 @@ static void esp32h2_machine_init(MachineState *machine)
      * cpu->mie_enabled as a second per-line gate alongside
      * PLIC_MXINT_ENABLE_REG. */
     qdev_prop_set_bit(DEVICE(&ms->soc), "mie-as-bitmap", true);
+    /* ESP32-H2 silicon hardwires MPRV and S-mode mstatus bits to 0 (TRM
+     * Register 1.5).  Same layout as ESP32-C6. */
+    RISCV_CPU(&ms->soc)->env.mstatus_warl_mask = ESP32C6_MSTATUS_WARL_MASK;
 
     const struct MemmapEntry *memmap = esp32h2_memmap;
     MemoryRegion *sys_mem = get_system_memory();
