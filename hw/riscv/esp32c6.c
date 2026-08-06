@@ -253,6 +253,9 @@ static void esp32c6_machine_init(MachineState *machine)
      * PLIC_MXINT_ENABLE_REG.  Required for TEE-flavoured IDF builds that
      * mask/unmask interrupts via RV_SET_CSR(mie, …). */
     qdev_prop_set_bit(DEVICE(&ms->soc), "mie-as-bitmap", true);
+    /* ESP32-C6 silicon hardwires MPRV and S-mode mstatus bits to 0 (TRM
+     * Register 1.5).  Restrict the mstatus WARL mask to match. */
+    RISCV_CPU(&ms->soc)->env.mstatus_warl_mask = ESP32C6_MSTATUS_WARL_MASK;
 
     const struct MemmapEntry *memmap = esp32c6_memmap;
     MemoryRegion *sys_mem = get_system_memory();
