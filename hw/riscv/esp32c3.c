@@ -344,6 +344,9 @@ static void esp32c3_machine_init(MachineState *machine)
     /* Initialize SoC */
     object_initialize_child(OBJECT(ms), "soc", &ms->soc, TYPE_ESP_RISCV_CPU);
     qdev_prop_set_uint64(DEVICE(&ms->soc), "resetvec", ESP32C3_RESET_ADDRESS);
+    /* ESP32-C3 silicon hardwires MPRV and S-mode mstatus bits to 0 (TRM
+     * Register 1.5).  Restrict the mstatus WARL mask to match. */
+    RISCV_CPU(&ms->soc)->env.mstatus_warl_mask = ESP32C3_MSTATUS_WARL_MASK;
 
     /* Initialize the memory mapping */
     const struct MemmapEntry *memmap = esp32c3_memmap;
