@@ -69,6 +69,7 @@
 
 #include "hw/misc/esp32c3_jtag.h"
 #include "hw/display/esp_rgb.h"
+#include "hw/usb/esp32s3_usb_otg.h"
 
 #define TYPE_ESP32S3_SOC "xtensa.esp32s3"
 #define ESP32S3_SOC(obj) OBJECT_CHECK(Esp32s3SocState, (obj), TYPE_ESP32S3_SOC)
@@ -150,6 +151,7 @@ typedef struct Esp32s3SocState {
 
     ESP32C3UsbJtagState jtag;
     ESPRgbState rgb;
+    Esp32s3UsbOtgState usb_otg;
 
     MemoryRegion iomem;
     DWCSDMMCState sdmmc;
@@ -541,6 +543,9 @@ static void esp32s3_soc_init(Object *obj)
 
     object_initialize_child(obj, "intmatrix", &s->intmatrix, TYPE_ESP32S3_INTMATRIX);
 
+    object_initialize_child(obj, "usb_otg", &s->usb_otg, TYPE_ESP32S3_USB_OTG);
+    qdev_prop_set_chr(DEVICE(&s->usb_otg), "chardev", serial_hd(2));
+
     object_initialize_child(obj, "rtc_cntl", &s->rtc_cntl, TYPE_ESP32S3_RTC_CNTL);
 
     qdev_init_gpio_in_named(DEVICE(s), esp32s3_dig_reset,  ESP32S3_RTC_DIG_RESET_GPIO, 1);
@@ -673,6 +678,16 @@ static void esp32s3_machine_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&ss->jtag), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->jtag), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_USB_SERIAL_JTAG_BASE, mr, 0);
+    }
+
+    /* USB OTG (DWC2 device mode) realization; data transport is the third
+     * serial chardev (-serial #2), if provided. */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ss->usb_otg), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->usb_otg), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_USB_OTG_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ss->usb_otg), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_USB_INTR_SOURCE));
     }
 
     /* SPI1 controller (SPI Flash) */
