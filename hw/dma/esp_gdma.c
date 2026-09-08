@@ -365,6 +365,9 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
             }
 
             const bool eof_bit = out_list.config.suc_eof;
+            /* Remember which descriptor this was before out_addr moves on, so
+             * that the EOF descriptor address register can report it below. */
+            const uint32_t eof_desc_addr = out_addr;
 
             /* Retrieve the next node  while updating the virtual guest address */
             out_addr = out_list.next_addr;
@@ -379,6 +382,11 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
             /* If the EOF bit was set, the real controller doesn't stop the transfer, it simply
              * sets the status accordingly (and generates an interrupt if enabled) */
             if (eof_bit) {
+                /* Report which descriptor finished, as the receive path does in
+                 * esp_gdma_write_channel(). A driver that reads
+                 * GDMA_OUT_EOF_DES_ADDR to find the completed buffer otherwise
+                 * gets zero and dereferences it. */
+                state->suc_eof_desc_addr = eof_desc_addr;
                 esp_gdma_set_status(&state->int_state, R_GDMA_INTERRUPT_OUT_EOF_MASK |
                                                        R_GDMA_INTERRUPT_OUT_TOTAL_EOF_MASK);
             }
