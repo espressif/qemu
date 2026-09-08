@@ -49,6 +49,11 @@ typedef struct ESP32S3ClockState {
     uint32_t cpuperconf;
     uint32_t sysclk;
 
+    /* Bluetooth low-power clock divider: the controller writes both and
+     * checks that they read back before it will start. */
+    uint32_t bt_lpck_div_int;
+    uint32_t bt_lpck_div_frac;
+
 
     /* IRQs for crosscore interrupts */
     qemu_irq irqs[ESP32S3_SYSTEM_CPU_INTR_COUNT];
