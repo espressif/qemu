@@ -792,7 +792,21 @@ static void esp32s3_machine_init(MachineState *machine)
 
     /* GDMA Realization */
     {
-        object_property_set_link(OBJECT(&ss->gdma), "soc_mr", OBJECT(dram), &error_abort);
+        /* The GDMA reaches internal RAM and, through the MMU, the data cache window. IRAM, ROM, RTC memory
+         * and peripherals answer with a descriptor error, so they must stay out of its view. */
+        MemoryRegion *dma_view = g_new(MemoryRegion, 1);
+        MemoryRegion *dma_dram = g_new(MemoryRegion, 1);
+        MemoryRegion *dma_dcache = g_new(MemoryRegion, 1);
+
+        memory_region_init(dma_view, OBJECT(ss), "esp32s3.gdma-view", UINT64_MAX);
+        memory_region_init_alias(dma_dram, OBJECT(ss), "esp32s3.gdma-dram", dram, 0,
+                                 memmap[ESP32S3_MEMREGION_DRAM].size);
+        memory_region_add_subregion(dma_view, memmap[ESP32S3_MEMREGION_DRAM].base, dma_dram);
+        memory_region_init_alias(dma_dcache, OBJECT(ss), "esp32s3.gdma-dcache", &ss->cache.dcache, 0,
+                                 memmap[ESP32S3_MEMREGION_DCACHE].size);
+        memory_region_add_subregion(dma_view, memmap[ESP32S3_MEMREGION_DCACHE].base, dma_dcache);
+
+        object_property_set_link(OBJECT(&ss->gdma), "soc_mr", OBJECT(dma_view), &error_abort);
         sysbus_realize(SYS_BUS_DEVICE(&ss->gdma), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->gdma), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GDMA_BASE, mr, 0);
