@@ -372,6 +372,10 @@ static bool esp_cpu_has_work(CPUState *cs)
 {
     EspRISCVCPU *cpu = ESP_CPU(cs);
 
+    if (cpu->stalled) {
+        return false;
+    }
+
     if (cpu->irq_lines != 0 || (cs->interrupt_request & CPU_INTERRUPT_HARD)) {
         return true;
     }
@@ -552,6 +556,14 @@ static void esp_cpu_override_tcg_interrupts(Object *obj)
     EspRISCVCPUClass *klass = ESP_CPU_GET_CLASS(obj);
     CPUClass *cc = CPU_CLASS(klass);
     EspRISCVCPUClass *cpuclass = ESP_CPU_CLASS(klass);
+
+    /* `tcg_ops` and the class are shared by every instance, but instance_init
+     * runs once per CPU. On a dual-core SOC the second pass would copy the
+     * already-patched table onto itself and latch esp_cpu_exec_interrupt as
+     * its own parent, recursing until the stack is exhausted. */
+    if (cc->tcg_ops == &tcg_ops) {
+        return;
+    }
 
     /* The goal of this RISC-V CPU child class is to override the way interrupts are handled.
      * In theory, it would be enough to override `do_interrupt` function from the CPU's TCGCPUOps

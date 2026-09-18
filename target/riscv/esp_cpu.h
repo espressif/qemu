@@ -143,6 +143,9 @@ typedef struct EspRISCVCPU {
      * older C3/C6/H2 cores, where it is a no-op stub; storing it here is
      * harmless on those SOCs and lets the C5 round-trip it. */
     uint32_t mexstatus;
+
+    /* Run-stalled or held in reset by the SoC. Interrupts do not wake the core. */
+    bool stalled;
 } EspRISCVCPU;
 
 /**

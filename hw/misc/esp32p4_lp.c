@@ -21,6 +21,28 @@
 /* LP_CLKRST is at +0x1000 from LP_BASE; RESET_CAUSE at +0x10 within it */
 #define LP_CLKRST_RESET_CAUSE_REG  0x1010
 
+/* LP_CLKRST_HPCPU_RESET_CTRL0 (+0x14 within LP_CLKRST) */
+#define LP_CLKRST_HPCPU_RESET_CTRL0_REG  0x1014
+#define LP_CLKRST_HPCORE0_SW_RESET       (1U << 13)
+#define LP_CLKRST_HPCORE1_SW_RESET       (1U << 29)
+
+/* LP_SYSTEM_REG_SYS_CTRL */
+#define LP_SYS_CTRL_REG                  0x0008
+#define LP_SYS_CTRL_SYS_SW_RST           (1U << 1)
+
+/* LP_SYSTEM_REG_LP_STORE0..15 */
+#define LP_SYS_STORE0_REG                0x002C
+#define LP_SYS_STORE15_REG               0x0068
+
+/* LP_SYSTEM boot address for HP core1, written through ROM
+ * ets_set_appcpu_boot_addr() */
+#define LP_SYS_BOOT_ADDR_HP_CORE1_REG    0x0164
+
+/* PMU_CPU_SW_STALL at DR_REG_PMU_BASE (0x50115000) + 0x200 */
+#define PMU_CPU_SW_STALL_REG       0x5200
+#define PMU_HPCORE1_STALL_CODE_S   16
+#define PMU_STALL_CODE_STALLED     0x86
+
 /* LP_TRNG at DR_REG_LP_TRNG_BASE (0x50126000) → relative 0x16000 */
 #define LP_TRNG_DATA_REG           0x16000
 #define LP_TRNG_DATA_REG_HI        0x16004
@@ -61,9 +83,26 @@ static uint64_t esp32p4_lp_read(void *opaque, hwaddr addr, unsigned int size)
 
     if (addr == LP_CLKRST_RESET_CAUSE_REG) {
         uint32_t reason = s->reset_reason & 0x3f;
-        /* HPCORE0_RESET_CAUSE in bits[12:7]; LPCORE in bits[5:0] */
-        r = (reason << 7) | reason;
+        /*
+         * HPCORE1_RESET_CAUSE in bits[19:14], HPCORE0 in bits[12:7], LPCORE in
+         * bits[5:0]. Both HP cores come out of the same reset events we model,
+         * so they report the same cause; the ROM start-up code reads the field
+         * matching its own mhartid.
+         */
+        r = (reason << 14) | (reason << 7) | reason;
         return r;
+    }
+
+    if (addr >= LP_SYS_STORE0_REG && addr <= LP_SYS_STORE15_REG) {
+        return s->store[(addr - LP_SYS_STORE0_REG) / 4];
+    }
+
+    if (addr == LP_SYS_BOOT_ADDR_HP_CORE1_REG) {
+        return s->core1_boot_addr;
+    }
+
+    if (addr == PMU_CPU_SW_STALL_REG) {
+        return s->cpu_sw_stall;
     }
 
     if (addr == LP_TRNG_DATA_REG || addr == LP_TRNG_DATA_REG_HI) {
@@ -88,6 +127,42 @@ static void esp32p4_lp_write(void *opaque, hwaddr addr, uint64_t value,
     if (addr >= ESP32P4_LPPERI_OFFSET &&
         addr < ESP32P4_LPPERI_OFFSET + ESP32P4_LPPERI_SIZE) {
         s->lpperi[(addr - ESP32P4_LPPERI_OFFSET) / 4] = (uint32_t)value;
+        return;
+    }
+
+    if (addr >= LP_SYS_STORE0_REG && addr <= LP_SYS_STORE15_REG) {
+        s->store[(addr - LP_SYS_STORE0_REG) / 4] = (uint32_t)value;
+        return;
+    }
+
+    if (addr == LP_SYS_CTRL_REG) {
+        if (value & LP_SYS_CTRL_SYS_SW_RST) {
+            esp32p4_lp_reset_request(opaque, ESP32P4_CORE_SW, 1);
+        }
+        return;
+    }
+
+    if (addr == LP_SYS_BOOT_ADDR_HP_CORE1_REG) {
+        s->core1_boot_addr = (uint32_t)value;
+        return;
+    }
+
+    if (addr == PMU_CPU_SW_STALL_REG) {
+        s->cpu_sw_stall = (uint32_t)value;
+        const uint8_t code = (s->cpu_sw_stall >> PMU_HPCORE1_STALL_CODE_S) & 0xff;
+        qemu_set_irq(s->core1_stall, code == PMU_STALL_CODE_STALLED);
+        return;
+    }
+
+    if (addr == LP_CLKRST_HPCPU_RESET_CTRL0_REG) {
+        /* The SW_RESET bits are write-to-trigger and do not latch */
+        if (value & LP_CLKRST_HPCORE1_SW_RESET) {
+            qemu_irq_pulse(s->core1_sw_reset);
+        }
+        if (value & LP_CLKRST_HPCORE0_SW_RESET) {
+            esp32p4_lp_reset_request(opaque, ESP32P4_CPU_SW, 1);
+        }
+        return;
     }
 }
 
@@ -112,7 +187,11 @@ static void esp32p4_lp_reset_hold(Object *obj, ResetType type)
         s->lpperi[lpperi_reset[i].offset / 4] = lpperi_reset[i].value;
     }
 
+    s->core1_boot_addr = 0;
+    s->cpu_sw_stall = 0;
+
     qemu_irq_lower(s->cpu_reset);
+    qemu_irq_lower(s->core1_stall);
 }
 
 static void esp32p4_lp_init(Object *obj)
@@ -126,6 +205,10 @@ static void esp32p4_lp_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     qdev_init_gpio_in(DEVICE(s), esp32p4_lp_reset_request, ESP32P4_RESET_REASON_MAX);
     qdev_init_gpio_out_named(DEVICE(s), &s->cpu_reset, ESP32P4_LP_RESET_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(s), &s->core1_stall,
+                             ESP32P4_LP_CORE1_STALL_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(s), &s->core1_sw_reset,
+                             ESP32P4_LP_CORE1_SW_RESET_GPIO, 1);
 
     s->reset_reason = ESP32P4_CHIP_POWER_ON;
 }

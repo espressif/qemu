@@ -67,6 +67,7 @@
 
 /* SoC constants */
 #define ESP32P4_IO_START_ADDR                   0x50000000
+#define ESP32P4_CPU_COUNT                       2
 #define ESP32P4_HP_UART_COUNT                   5
 #define ESP32P4_UART_COUNT                      ESP32P4_HP_UART_COUNT
 #define ESP32P4_INT_MATRIX_INPUTS               136

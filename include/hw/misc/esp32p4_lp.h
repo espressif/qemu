@@ -19,6 +19,11 @@
 #define ESP32P4_LP_BASE     0x50110000
 #define ESP32P4_LP_RESET_GPIO "esp32p4-lp-reset"
 
+/* Raised while PMU_CPU_SW_STALL holds HP core1's stall code (0x86). */
+#define ESP32P4_LP_CORE1_STALL_GPIO "esp32p4.lp.core1-stall"
+/* Pulsed when the guest writes LP_CLKRST_HPCPU_RESET_CTRL0.HPCORE1_SW_RESET. */
+#define ESP32P4_LP_CORE1_SW_RESET_GPIO "esp32p4.lp.core1-sw-reset"
+
 /* LP_PERI_CLKRST (LPPERI) block at 0x50120000 */
 #define ESP32P4_LPPERI_OFFSET 0x10000
 #define ESP32P4_LPPERI_SIZE   0x400
@@ -55,4 +60,12 @@ typedef struct {
     ESP32P4ResetReason reset_reason;
     qemu_irq cpu_reset;
     uint32_t lpperi[ESP32P4_LPPERI_SIZE / 4];
+    /* LP_SYSTEM_REG_LP_STORE0..15: retention registers, kept across a reset */
+    uint32_t store[16];
+    /* LP_SYSTEM_REG_BOOT_ADDR_HP_CORE1: the ROM's core1 start-up loop spins
+     * on this word and jumps to it once core0 makes it non-zero. */
+    uint32_t core1_boot_addr;
+    uint32_t cpu_sw_stall;
+    qemu_irq core1_stall;
+    qemu_irq core1_sw_reset;
 } ESP32P4LpState;
