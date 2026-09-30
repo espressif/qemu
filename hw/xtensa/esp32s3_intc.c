@@ -26,41 +26,87 @@
 
 #define IRQ_MAP(cpu, input) s->irq_map[cpu][input]
 
+/*
+ * The matrix is combinational: a CPU interrupt line is the OR of every source
+ * currently routed to it. So the level of each source is kept, and a line is
+ * recomputed whenever something that feeds it changes: a source's level, or a
+ * mapping that routes a source to it or away from it.
+ */
+static bool esp32s3_intmatrix_line_level(Esp32s3IntMatrixState *s, int cpu,
+                                         int line)
+{
+    for (int n = 0; n < ESP32S3_INT_MATRIX_INPUTS; ++n) {
+        if (IRQ_MAP(cpu, n) == line && test_bit(n, s->irq_levels)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void esp32s3_intmatrix_update_line(Esp32s3IntMatrixState *s, int cpu,
+                                          int line)
+{
+    if (s->outputs[cpu] == NULL) {
+        return;
+    }
+    const XtensaConfig *config = s->cpu[cpu]->env.config;
+    for (int int_index = 0; int_index < config->nextint; ++int_index) {
+        if (config->extint[int_index] != line) {
+            continue;
+        }
+        const bool level = esp32s3_intmatrix_line_level(s, cpu, line);
+        const bool former = (s->out_levels[cpu] & BIT(line)) != 0;
+        /*
+         * Only a change is forwarded: re-raising an edge-triggered CPU
+         * interrupt would inject an edge the hardware never produced.
+         */
+        if (level != former) {
+            s->out_levels[cpu] ^= BIT(line);
+            qemu_set_irq(s->outputs[cpu][int_index], level);
+        }
+        return;
+    }
+    /*
+     * Not an external interrupt of this CPU (e.g. 6, used to disconnect a
+     * source): nothing is wired to it.
+     */
+}
+
 static void esp32s3_intmatrix_irq_handler(void *opaque, int n, int level)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
+
+    assert(n < ESP32S3_INT_MATRIX_INPUTS);
+    if (level) {
+        set_bit(n, s->irq_levels);
+    } else {
+        clear_bit(n, s->irq_levels);
+    }
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
-        if (s->outputs[i] == NULL) {
-            continue;
-        }
-        int out_index = IRQ_MAP(i, n);
-        for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
-            if (s->cpu[i]->env.config->extint[int_index] == out_index) {
-                qemu_set_irq(s->outputs[i][int_index], level);
-                break;
-            }
-        }
+        esp32s3_intmatrix_update_line(s, i, IRQ_MAP(i, n));
     }
 }
 
-static inline uint8_t* get_map_entry(Esp32s3IntMatrixState* s, hwaddr addr)
+static inline uint8_t *get_map_entry(Esp32s3IntMatrixState *s, hwaddr addr,
+                                     int *cpu, int *source)
 {
     int source_index = addr / sizeof(uint32_t);
-    if (source_index > ESP32S3_INT_MATRIX_INPUTS * ESP32S3_CPU_COUNT) {
+    if (source_index >= ESP32S3_INT_MATRIX_INPUTS * ESP32S3_CPU_COUNT) {
 #if INTC_DEBUG
         info_report("%s: source_index %d out of range", __func__, source_index);
 #endif // INTC_DEBUG
         return NULL;
     }
-    int cpu_index = source_index / ESP32S3_INT_MATRIX_INPUTS;
-    source_index = source_index % ESP32S3_INT_MATRIX_INPUTS;
-    return &IRQ_MAP(cpu_index, source_index);
+    *cpu = source_index / ESP32S3_INT_MATRIX_INPUTS;
+    *source = source_index % ESP32S3_INT_MATRIX_INPUTS;
+    return &IRQ_MAP(*cpu, *source);
 }
 
 static uint64_t esp32s3_intmatrix_read(void* opaque, hwaddr addr, unsigned int size)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
-    uint8_t* map_entry = get_map_entry(s, addr);
+    int cpu, source;
+    uint8_t *map_entry = get_map_entry(s, addr, &cpu, &source);
     return (map_entry != NULL) ? *map_entry : 0;
 }
 
@@ -70,9 +116,18 @@ static void esp32s3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
     info_report("\x1b[31m[INTC] esp32s3_intmatrix_write  addr = %ld, value=%ld\x1b[0m", addr, value);
 #endif // INTC_DEBUG
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
-    uint8_t* map_entry = get_map_entry(s, addr);
-    if (map_entry != NULL) {
-        *map_entry = value & 0x1f;
+    int cpu, source;
+    uint8_t *map_entry = get_map_entry(s, addr, &cpu, &source);
+    if (map_entry == NULL) {
+        return;
+    }
+    const uint8_t old_line = *map_entry;
+    const uint8_t new_line = value & 0x1f;
+    *map_entry = new_line;
+    if (old_line != new_line) {
+        /* The source leaves the old line and starts feeding the new one. */
+        esp32s3_intmatrix_update_line(s, cpu, old_line);
+        esp32s3_intmatrix_update_line(s, cpu, new_line);
     }
 }
 
@@ -85,8 +140,15 @@ static const MemoryRegionOps esp_intmatrix_ops = {
 static void esp32s3_intmatrix_reset_hold(Object *obj, ResetType type)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(obj);
+    /*
+     * This reset comes with the reset of the peripherals, and not all of their
+     * models lower their interrupt on reset. On silicon no source is asserted
+     * after a system reset. A CPU reset does not get here, and keeps the levels.
+     */
+    bitmap_zero(s->irq_levels, ESP32S3_INT_MATRIX_INPUTS);
     memset(s->irq_map, INTMATRIX_UNINT_VALUE, sizeof(s->irq_map));
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
+        s->out_levels[i] = 0;
         if (s->outputs[i] == NULL) {
             continue;
         }
