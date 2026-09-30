@@ -22,48 +22,103 @@
 
 #define IRQ_MAP(cpu, input) s->irq_map[cpu][input]
 
+/*
+ * The matrix is combinational: a CPU interrupt line is the OR of every source
+ * currently routed to it. So the level of each source is kept, and a line is
+ * recomputed whenever something that feeds it changes: a source's level, or a
+ * mapping that routes a source to it or away from it.
+ */
+static bool esp32_intmatrix_line_level(Esp32IntMatrixState *s, int cpu,
+                                       int line)
+{
+    for (int n = 0; n < ESP32_INT_MATRIX_INPUTS; ++n) {
+        if (IRQ_MAP(cpu, n) == line && test_bit(n, s->irq_levels)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void esp32_intmatrix_update_line(Esp32IntMatrixState *s, int cpu,
+                                        int line)
+{
+    if (s->outputs[cpu] == NULL) {
+        return;
+    }
+    const XtensaConfig *config = s->cpu[cpu]->env.config;
+    for (int int_index = 0; int_index < config->nextint; ++int_index) {
+        if (config->extint[int_index] != line) {
+            continue;
+        }
+        const bool level = esp32_intmatrix_line_level(s, cpu, line);
+        const bool former = (s->out_levels[cpu] & BIT(line)) != 0;
+        /*
+         * Only a change is forwarded: re-raising an edge-triggered CPU
+         * interrupt would inject an edge the hardware never produced.
+         */
+        if (level != former) {
+            s->out_levels[cpu] ^= BIT(line);
+            qemu_set_irq(s->outputs[cpu][int_index], level);
+        }
+        return;
+    }
+    /*
+     * Not an external interrupt of this CPU (e.g. 6, used to disconnect a
+     * source): nothing is wired to it.
+     */
+}
+
 static void esp32_intmatrix_irq_handler(void *opaque, int n, int level)
 {
     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
+
+    assert(n < ESP32_INT_MATRIX_INPUTS);
+    if (level) {
+        set_bit(n, s->irq_levels);
+    } else {
+        clear_bit(n, s->irq_levels);
+    }
     for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
-        if (s->outputs[i] == NULL) {
-            continue;
-        }
-        int out_index = IRQ_MAP(i, n);
-        for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
-            if (s->cpu[i]->env.config->extint[int_index] == out_index) {
-                qemu_set_irq(s->outputs[i][int_index], level);
-                break;
-            }
-        }
+        esp32_intmatrix_update_line(s, i, IRQ_MAP(i, n));
     }
 }
 
-static inline uint8_t* get_map_entry(Esp32IntMatrixState* s, hwaddr addr)
+static inline uint8_t *get_map_entry(Esp32IntMatrixState *s, hwaddr addr,
+                                     int *cpu, int *source)
 {
     int source_index = addr / sizeof(uint32_t);
-    if (source_index > ESP32_INT_MATRIX_INPUTS * ESP32_CPU_COUNT) {
+    if (source_index >= ESP32_INT_MATRIX_INPUTS * ESP32_CPU_COUNT) {
         error_report("%s: source_index %d out of range", __func__, source_index);
         return NULL;
     }
-    int cpu_index = source_index / ESP32_INT_MATRIX_INPUTS;
-    source_index = source_index % ESP32_INT_MATRIX_INPUTS;
-    return &IRQ_MAP(cpu_index, source_index);
+    *cpu = source_index / ESP32_INT_MATRIX_INPUTS;
+    *source = source_index % ESP32_INT_MATRIX_INPUTS;
+    return &IRQ_MAP(*cpu, *source);
 }
 
 static uint64_t esp32_intmatrix_read(void* opaque, hwaddr addr, unsigned int size)
 {
     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
-    uint8_t* map_entry = get_map_entry(s, addr);
+    int cpu, source;
+    uint8_t *map_entry = get_map_entry(s, addr, &cpu, &source);
     return (map_entry != NULL) ? *map_entry : 0;
 }
 
 static void esp32_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, unsigned int size)
 {
     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
-    uint8_t* map_entry = get_map_entry(s, addr);
-    if (map_entry != NULL) {
-        *map_entry = value & 0x1f;
+    int cpu, source;
+    uint8_t *map_entry = get_map_entry(s, addr, &cpu, &source);
+    if (map_entry == NULL) {
+        return;
+    }
+    const uint8_t old_line = *map_entry;
+    const uint8_t new_line = value & 0x1f;
+    *map_entry = new_line;
+    if (old_line != new_line) {
+        /* The source leaves the old line and starts feeding the new one. */
+        esp32_intmatrix_update_line(s, cpu, old_line);
+        esp32_intmatrix_update_line(s, cpu, new_line);
     }
 }
 
@@ -76,8 +131,10 @@ static const MemoryRegionOps esp_intmatrix_ops = {
 static void esp32_intmatrix_reset_hold(Object *obj, ResetType type)
 {
     Esp32IntMatrixState *s = ESP32_INTMATRIX(obj);
+    /* Input levels are left alone: they belong to the sources driving them. */
     memset(s->irq_map, INTMATRIX_UNINT_VALUE, sizeof(s->irq_map));
     for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
+        s->out_levels[i] = 0;
         if (s->outputs[i] == NULL) {
             continue;
         }
