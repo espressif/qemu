@@ -87,9 +87,22 @@ typedef struct ESPUARTState {
     QEMUTimer rx_timeout_timer;
     bool throttle_rx;
     bool rxfifo_tout;
+    /* A byte was lost because the RX FIFO was full. */
+    bool rxfifo_ovf;
+    /* Property. False: a full FIFO stops the chardev being read, so no input is
+     * lost. True: input arrives at the baud rate on the virtual clock and can
+     * overflow the FIFO, as on a board. Without -icount the virtual clock runs
+     * while the host is not running the guest, so a guest that keeps up on a
+     * board can still lose bytes.
+     */
+    bool rx_overflow;
     unsigned baud_rate;
 
-    Fifo8 rx_fifo;
+    /* The RX FIFO keeps separate pointers because they can go out of step */
+    uint8_t rx_mem[UART_FIFO_LENGTH];
+    uint32_t rx_rd;
+    uint32_t rx_wr;
+    uint32_t rx_cnt;
     Fifo8 tx_fifo;
     guint tx_watch_handle;
 
