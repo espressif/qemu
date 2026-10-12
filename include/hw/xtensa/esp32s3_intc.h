@@ -130,6 +130,10 @@ typedef enum {
 
 #define ESP32S3_INT_MATRIX_INPUTS (0x800/4)
 
+/* INTR_STATUS_0..3 of each CPU's block follow its 99 map registers */
+#define ESP32S3_INT_MATRIX_STATUS_OFFSET  0x18c
+#define ESP32S3_INT_MATRIX_STATUS_WORDS   4
+
 #define TYPE_ESP32S3_INTMATRIX "misc.esp32s3.intmatrix"
 #define ESP32S3_INTMATRIX(obj) OBJECT_CHECK(Esp32s3IntMatrixState, (obj), TYPE_ESP32S3_INTMATRIX)
 
