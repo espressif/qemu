@@ -10,6 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/irq.h"
 #include "qemu/module.h"
@@ -127,17 +128,22 @@ static inline bool psram_is_read_command(SsiPsramState *s)
 }
 
 /**
+ * @brief Get the offset in the PSRAM's internal RAM of the `addr` field added to `offset`.
+ * The address wraps at the size of the part, as on ESP32-S3 silicon with octal PSRAM.
+ */
+static uint32_t psram_wrap_addr(SsiPsramState *s, off_t offset)
+{
+    return ((uint64_t)s->addr + offset) % (s->size_mbytes * MiB);
+}
+
+/**
  * @brief Write data to the PSRAM's internal RAM.
  * The address will be taken from the `addr` field added to the `offset`.
  */
 static void psram_write_data(SsiPsramState *s, off_t offset, uint8_t byte)
 {
     uint8_t* ptr = (uint8_t*) memory_region_get_ram_ptr(&s->data_mr);
-    const uint32_t size_bytes = s->size_mbytes * 1024 * 1024;
-    off_t destination = s->addr + offset;
-    if (destination < size_bytes) {
-        ptr[destination] = byte;
-    }
+    ptr[psram_wrap_addr(s, offset)] = byte;
 }
 
 
@@ -148,12 +154,7 @@ static void psram_write_data(SsiPsramState *s, off_t offset, uint8_t byte)
 static uint8_t psram_read_data(SsiPsramState *s, off_t offset)
 {
     uint8_t* ptr = (uint8_t*) memory_region_get_ram_ptr(&s->data_mr);
-    const uint32_t size_bytes = s->size_mbytes * 1024 * 1024;
-    off_t destination = s->addr + offset;
-    if (destination < size_bytes) {
-        return ptr[destination];
-    }
-    return 0;
+    return ptr[psram_wrap_addr(s, offset)];
 }
 
 static PsramState psram_quad_write_idle(SsiPsramState *s, uint32_t value)
@@ -453,7 +454,13 @@ static int psram_cs(SSIPeripheral *ss, bool select)
         /* If data were written to the cache via the MemoryRegion, we need to
          * mark the area as dirty since the ESP target's `cache` also uses it. */
         if (s->state == ST_PROCESSING && psram_is_write_command(s)) {
-            memory_region_set_dirty(&s->data_mr, s->addr, s->byte_count);
+            const uint64_t size_bytes = s->size_mbytes * MiB;
+            const uint32_t start = psram_wrap_addr(s, 0);
+            if (start + s->byte_count > size_bytes) {
+                memory_region_set_dirty(&s->data_mr, 0, size_bytes);
+            } else {
+                memory_region_set_dirty(&s->data_mr, start, s->byte_count);
+            }
         }
         s->state = ST_IDLE;
         s->byte_count = 0;
