@@ -114,6 +114,10 @@ static const struct MemmapEntry {
 
 #define ESP32S3_IO_WARNING  0
 
+/* Analog I2C master: ANA_CONF0 and its BBPLL calibration done bit */
+#define ESP32S3_I2C_MST_ANA_CONF0_REG   0x6000E040
+#define ESP32S3_I2C_MST_BBPLL_CAL_DONE  BIT(24)
+
 typedef struct Esp32s3SocState {
     /*< private >*/
     DeviceState parent_obj;
@@ -460,6 +464,13 @@ static void esp32s3_soc_realize(DeviceState *dev, Error **errp)
 
 static uint64_t esp32s3_io_read(void *opaque, hwaddr addr, unsigned int size)
 {
+    /*
+     * The BBPLL is not emulated, so its calibration is always done. Drivers
+     * that wait for this bit (esp-hal) would otherwise spin forever.
+     */
+    if (ESP32S3_IO_START_ADDR + addr == ESP32S3_I2C_MST_ANA_CONF0_REG) {
+        return ESP32S3_I2C_MST_BBPLL_CAL_DONE;
+    }
 #if ESP32S3_IO_WARNING
     warn_report("[ESP32-S3] Unsupported read to $%08lx, size = %i\n", ESP32S3_IO_START_ADDR + addr, size);
 #endif
