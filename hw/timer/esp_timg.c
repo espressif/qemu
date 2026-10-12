@@ -438,11 +438,14 @@ static void esp_t0_config_update(ESPTimgState* s, ESPT0State* t0, uint32_t value
         esp_t0_update_counter(t0);
     }
 
-    /* Calculate the new frequency */
-    const uint32_t new_divider = FIELD_EX32(value, TIMG_T0CONFIG, DIVIDER);
+    /* Calculate the new frequency, a divider of 0 means 65536 */
+    uint32_t new_divider = FIELD_EX32(value, TIMG_T0CONFIG, DIVIDER);
+    if (new_divider == 0) {
+        new_divider = 65536;
+    }
     const uint32_t xtal = s->xtal_freq ? s->xtal_freq : ESP_XTAL_CLK;
     const uint64_t new_clk = FIELD_EX32(value, TIMG_T0CONFIG, USE_XTAL) ? xtal : ESP_APB_CLK;
-    const uint64_t new_freq = new_divider ? (new_clk / new_divider) : new_clk;
+    const uint64_t new_freq = new_clk / new_divider;
     if (new_freq != t0->counter.frequency) {
         t0->counter.frequency = new_freq;
     }
