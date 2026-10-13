@@ -13,6 +13,8 @@
 #define DR_REG_CLINT_M_BASE                     0x20000000
 #define DR_REG_CLIC_BASE                        0x20800000
 #define DR_REG_CLIC_CTRL_BASE                   0x20801000
+/* Other hart's CLIC, reached as CLIC + DUALCORE_CLIC_CTRL_OFF (0x10000). */
+#define DR_REG_CLIC_CORE1_BASE                  0x20810000
 
 /* Early peripherals */
 #define DR_REG_INTPRI_BASE                      0x60005000
@@ -40,7 +42,9 @@
 #define DR_REG_SPI0_BASE                        DR_REG_SPIMEM0_BASE
 #define DR_REG_SPI1_BASE                        DR_REG_SPIMEM1_BASE
 #define DR_REG_INTMTX0_BASE                     0x6009A000
+#define DR_REG_INTMTX1_BASE                     0x6009B000
 #define DR_REG_INTERRUPT_BASE                   DR_REG_INTMTX0_BASE
+#define DR_REG_INTERRUPT_CORE1_BASE             DR_REG_INTMTX1_BASE
 #define DR_REG_HP_SYSTEM_BASE                   0x6009C000
 #define DR_REG_SYSTEM_BASE                      DR_REG_HP_SYSTEM_BASE
 #define DR_REG_SHA_BASE                         0x600A7000
@@ -60,6 +64,7 @@
 
 /* SoC constants */
 #define ESP32H4_IO_START_ADDR                   (0x60000000)
+#define ESP32H4_CPU_COUNT                       2
 #define ESP32H4_UART_COUNT                      2
 #define ESP32H4_INT_MATRIX_INPUTS               98
 #define ESP32H4_CPU_INT_COUNT                   47

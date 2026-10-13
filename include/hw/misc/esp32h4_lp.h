@@ -18,6 +18,11 @@
 #define ESP32H4_LP_BASE     0x600B0000
 #define ESP32H4_LP_RESET_GPIO "esp32h4-lp-reset"
 
+/* Raised while LP_AON_CPUCORE_CFG.CPU_CORE1_SW_STALL holds 0x86. */
+#define ESP32H4_LP_CORE1_STALL_GPIO "esp32h4.lp.core1-stall"
+/* Pulsed when the guest writes LP_AON_CPUCORE_CFG.CPU_CORE1_SW_RESET. */
+#define ESP32H4_LP_CORE1_SW_RESET_GPIO "esp32h4.lp.core1-sw-reset"
+
 typedef enum ESP32H4ResetReason {
     ESP32H4_CHIP_POWER_ON        = 0x01,
     ESP32H4_CORE_SW              = 0x03,
@@ -47,4 +52,8 @@ typedef struct {
     uint64_t lp_timer_counter;
     ESP32H4ResetReason reset_reason;
     qemu_irq cpu_reset;
+    /* LP_AON_CPUCORE_CFG. Reset value keeps both cores' STAT_VECTOR_SEL on ROM. */
+    uint32_t cpucore_cfg;
+    qemu_irq core1_stall;
+    qemu_irq core1_sw_reset;
 } ESP32H4LpState;

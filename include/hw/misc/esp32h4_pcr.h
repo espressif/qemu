@@ -16,8 +16,15 @@
 
 #define ESP32H4_PCR_IO_SIZE 0x1000
 
+/*
+ * Raised while HP core1 is clocked and out of reset, i.e. once the guest has
+ * set PCR_CORE1_CONF.CORE1_CLK_EN and cleared PCR_CORE1_CONF.CORE1_RST_EN.
+ */
+#define ESP32H4_PCR_CORE1_RUN_GPIO "esp32h4.pcr.core1-run"
+
 typedef struct ESP32H4PcrState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     uint32_t reg[ESP32H4_PCR_IO_SIZE / 4];
+    qemu_irq core1_run;
 } ESP32H4PcrState;

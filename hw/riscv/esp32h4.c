@@ -16,6 +16,7 @@
 #include "qapi/error.h"
 #include "hw/hw.h"
 #include "hw/boards.h"
+#include "hw/irq.h"
 #include "hw/loader.h"
 #include "hw/riscv/riscv_hart.h"
 #include "target/riscv/esp_cpu.h"
@@ -55,6 +56,7 @@
 #include "hw/dma/esp32h4_gdma.h"
 
 #define ESP32H4_RESET_ADDRESS       0x40000000
+#define ESP32H4_CORE1_RESET_HOLD_NS (100 * SCALE_US)
 #define ESP32H4_RESET_GPIO_NAME     "esp32h4.machine.reset_gpio"
 #define MB (1024*1024)
 
@@ -72,14 +74,33 @@
 struct Esp32H4MachineState {
     MachineState parent;
 
-    EspRISCVCPU soc;
+    unsigned num_cpus;
+    EspRISCVCPU cpu[ESP32H4_CPU_COUNT];
+    /*
+     * The CLIC window is aliased per hart: each core reaches its own CLIC at
+     * DR_REG_CLIC_BASE and the other core's at DR_REG_CLIC_CORE1_BASE,
+     * whichever core it is running on. That cannot be expressed in the shared
+     * system memory map, so every hart gets its own address space: a container
+     * holding an alias of system memory plus the two CLIC views.
+     */
+    MemoryRegion cpu_mem[ESP32H4_CPU_COUNT];
     BusState periph_bus;
+
+    /* core1 runs only once it is clocked, out of reset and not stalled */
+    bool core1_clk_run;
+    bool core1_stalled;
+    bool core1_reset_pending;
+    QEMUTimer core1_reset_hold;
+    /* core1 was halted in WFI when it was stalled */
+    bool core1_idle;
 
     qemu_irq cpu_reset;
     MemoryRegion qemu_delay_mmio;
+    /* HP_SYSTEM_CORE_DEBUG_RUNSTALL_CONF, over the clock window at +0x40. */
+    MemoryRegion runstall_mmio;
 
     DeviceState *eth;
-    ESP32H4IntMatrixState intmatrix;
+    ESP32H4IntMatrixState intmatrix[ESP32H4_CPU_COUNT];
     ESP32H4IntpriState intpri;
     ESP32H4UARTState uart[ESP32H4_UART_COUNT];
     ESP32H4GPIOState gpio;
@@ -127,6 +148,136 @@ static void esp32h4_reset_request(void *opaque, int n, int level)
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
     }
 }
+
+/* Apply the requested core1 state. Runs on core1's thread: core1 may be executing. */
+static void esp32h4_core1_apply(CPUState *cs, run_on_cpu_data data)
+{
+    Esp32H4MachineState *ms = data.host_ptr;
+    EspRISCVCPU *cpu = ESP_CPU(cs);
+    const bool run = ms->core1_clk_run && !ms->core1_stalled &&
+                     !timer_pending(&ms->core1_reset_hold);
+
+    /* A stall keeps the core's state, including whether it was waiting in WFI */
+    if (!cpu->stalled) {
+        ms->core1_idle = cs->halted;
+    }
+
+    if (ms->core1_reset_pending) {
+        ms->core1_reset_pending = false;
+        ms->core1_idle = false;
+        cpu_reset(cs);
+    }
+
+    cpu->stalled = !run;
+    cs->halted = run ? ms->core1_idle : 1;
+}
+
+/*
+ * Core1 boots the same mask ROM as core0. The ROM dispatches on mhartid and parks
+ * core1 in a loop polling HP_SYSTEM_APPCPU_BOOT_ADDR until core0 sets an entry point.
+ */
+static void esp32h4_core1_refresh(Esp32H4MachineState *ms)
+{
+    if (ms->num_cpus < 2) {
+        return;
+    }
+
+    async_run_on_cpu(CPU(&ms->cpu[1]), esp32h4_core1_apply,
+                     RUN_ON_CPU_HOST_PTR(ms));
+}
+
+static void esp32h4_core1_reset_hold_done(void *opaque)
+{
+    esp32h4_core1_refresh(opaque);
+}
+
+static void esp32h4_core1_run_request(void *opaque, int n, int level)
+{
+    Esp32H4MachineState *ms = ESP32H4_MACHINE(opaque);
+    ms->core1_clk_run = level;
+    if (!level) {
+        ms->core1_reset_pending = true;
+    }
+    esp32h4_core1_refresh(ms);
+}
+
+static void esp32h4_core1_stall_request(void *opaque, int n, int level)
+{
+    Esp32H4MachineState *ms = ESP32H4_MACHINE(opaque);
+    ms->core1_stalled = level;
+    esp32h4_core1_refresh(ms);
+}
+
+static void esp32h4_core1_sw_reset_request(void *opaque, int n, int level)
+{
+    Esp32H4MachineState *ms = ESP32H4_MACHINE(opaque);
+
+    if (level) {
+        /*
+         * IDF writes the stall code right after the reset bit and relies on core1
+         * not reaching the boot address check in between.
+         */
+        timer_mod(&ms->core1_reset_hold, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                         ESP32H4_CORE1_RESET_HOLD_NS);
+        ms->core1_reset_pending = true;
+        esp32h4_core1_refresh(ms);
+    }
+}
+
+/*
+ * A peripheral interrupt line is shared by both cores: each core's matrix maps
+ * it independently, so the source has to be delivered to every matrix.
+ */
+typedef struct Esp32H4IrqFanout {
+    qemu_irq out[ESP32H4_CPU_COUNT];
+    unsigned count;
+} Esp32H4IrqFanout;
+
+static void esp32h4_irq_fanout(void *opaque, int n, int level)
+{
+    Esp32H4IrqFanout *f = opaque;
+
+    for (unsigned i = 0; i < f->count; i++) {
+        qemu_set_irq(f->out[i], level);
+    }
+}
+
+static qemu_irq esp32h4_intmatrix_in(Esp32H4MachineState *ms, int source)
+{
+    if (ms->num_cpus < 2) {
+        return qdev_get_gpio_in(DEVICE(&ms->intmatrix[0]), source);
+    }
+
+    Esp32H4IrqFanout *f = g_new0(Esp32H4IrqFanout, 1);
+    f->count = ms->num_cpus;
+    for (unsigned i = 0; i < ms->num_cpus; i++) {
+        f->out[i] = qdev_get_gpio_in(DEVICE(&ms->intmatrix[i]), source);
+    }
+    return qemu_allocate_irq(esp32h4_irq_fanout, f, 0);
+}
+
+/* HP_SYSTEM_CORE_DEBUG_RUNSTALL_CONF: bit 2 is CORE1_RUNSTALLED. */
+static uint64_t esp32h4_runstall_read(void *opaque, hwaddr addr, unsigned size)
+{
+    Esp32H4MachineState *ms = ESP32H4_MACHINE(opaque);
+
+    return ms->core1_stalled ? (1U << 2) : 0;
+}
+
+static void esp32h4_runstall_write(void *opaque, hwaddr addr,
+                                   uint64_t value, unsigned size)
+{
+}
+
+static const MemoryRegionOps esp32h4_runstall_ops = {
+    .read = esp32h4_runstall_read,
+    .write = esp32h4_runstall_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
 
 /*
  * Advance QEMU_CLOCK_VIRTUAL under -icount without executing guest spins.
@@ -397,8 +548,7 @@ static void esp32h4_init_openeth(Esp32H4MachineState *ms)
     mr = sysbus_mmio_get_region(sbd, 1);
     memory_region_add_subregion_overlap(sys_mem, DR_REG_EMAC_BASE + 0x400, mr, 0);
 
-    sysbus_connect_irq(sbd, 0,
-                       qdev_get_gpio_in(DEVICE(&ms->intmatrix), 0));
+    sysbus_connect_irq(sbd, 0, esp32h4_intmatrix_in(ms, 0));
 }
 
 static void esp32h4_write_boot_stub(hwaddr entry, hwaddr reset_addr)
@@ -603,29 +753,62 @@ static void esp32h4_machine_init(MachineState *machine)
     }
 
     Esp32H4MachineState *ms = ESP32H4_MACHINE(machine);
+    const struct MemmapEntry *memmap = esp32h4_memmap;
+    MemoryRegion *sys_mem = get_system_memory();
 
-    object_initialize_child(OBJECT(ms), "soc", &ms->soc, TYPE_ESP_RISCV_CPU);
-    qdev_prop_set_uint64(DEVICE(&ms->soc), "resetvec", ESP32H4_RESET_ADDRESS);
-    qdev_prop_set_bit(DEVICE(&ms->soc), "has-pma", true);
-    qdev_prop_set_bit(DEVICE(&ms->soc), "clic-ext-irq", true);
+    ms->num_cpus = machine->smp.cpus;
+    ms->core1_reset_pending = true;
+    timer_init_ns(&ms->core1_reset_hold, QEMU_CLOCK_VIRTUAL,
+                  esp32h4_core1_reset_hold_done, ms);
 
-    {
-        CPURISCVState *env = &ms->soc.parent_obj.env;
+    for (unsigned i = 0; i < ms->num_cpus; i++) {
+        char name[40];
+
+        snprintf(name, sizeof(name), "cpu%u", i);
+        object_initialize_child(OBJECT(ms), name, &ms->cpu[i],
+                                TYPE_ESP_RISCV_CPU);
+        DeviceState *cpu_dev = DEVICE(&ms->cpu[i]);
+        qdev_prop_set_uint64(cpu_dev, "resetvec", ESP32H4_RESET_ADDRESS);
+        qdev_prop_set_uint32(cpu_dev, "hartid-base", i);
+        qdev_prop_set_bit(cpu_dev, "has-pma", true);
+        qdev_prop_set_bit(cpu_dev, "clic-ext-irq", true);
+
+        CPURISCVState *env = &ms->cpu[i].parent_obj.env;
         /* H4 has the FPU (SOC_CPU_HAS_FPU); ISR prologues use fsw/flw. */
         env->misa_ext |= RVA | RVF;
         env->misa_ext_mask |= RVA | RVF;
-        Object *soc_obj = OBJECT(&ms->soc);
-        object_property_set_bool(soc_obj, "zca", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcb", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcmp", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcmt", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcd", false, &error_abort);
-        object_property_set_bool(soc_obj, "zcf", false, &error_abort);
-        object_property_set_bool(soc_obj, "zicsr", true, &error_abort);
-    }
+        Object *cpu_obj = OBJECT(&ms->cpu[i]);
+        object_property_set_bool(cpu_obj, "zca", true, &error_abort);
+        object_property_set_bool(cpu_obj, "zcb", true, &error_abort);
+        object_property_set_bool(cpu_obj, "zcmp", true, &error_abort);
+        object_property_set_bool(cpu_obj, "zcmt", true, &error_abort);
+        object_property_set_bool(cpu_obj, "zcd", false, &error_abort);
+        object_property_set_bool(cpu_obj, "zcf", false, &error_abort);
+        object_property_set_bool(cpu_obj, "zicsr", true, &error_abort);
 
-    const struct MemmapEntry *memmap = esp32h4_memmap;
-    MemoryRegion *sys_mem = get_system_memory();
+        /*
+         * Per-hart address space, so that DR_REG_CLIC_BASE can resolve to a
+         * different CLIC depending on which core issues the access. The CLIC
+         * views themselves are attached once the matrices are realized.
+         */
+        CPUState *cs = CPU(&ms->cpu[i]);
+        snprintf(name, sizeof(name), "esp32h4.cpu%u-mem", i);
+        memory_region_init(&ms->cpu_mem[i], OBJECT(ms), name, UINT32_MAX);
+
+        MemoryRegion *sysmem_view = g_new(MemoryRegion, 1);
+        snprintf(name, sizeof(name), "esp32h4.cpu%u-sysmem", i);
+        memory_region_init_alias(sysmem_view, OBJECT(ms), name, sys_mem, 0,
+                                 UINT32_MAX);
+        memory_region_add_subregion_overlap(&ms->cpu_mem[i], 0, sysmem_view, 0);
+
+        cs->num_ases = 1;
+        cpu_address_space_init(cs, 0, "cpu-memory", &ms->cpu_mem[i]);
+        cs->memory = &ms->cpu_mem[i];
+
+        /* PCR holds core1 in reset until core0 releases it */
+        cs->start_powered_off = (i != 0);
+        ms->cpu[i].stalled = (i != 0);
+    }
 
     MemoryRegion *romdata = g_new(MemoryRegion, 1);
     memory_region_init_ram(romdata, NULL, "esp32h4.romdata", 0x20000, &error_fatal);
@@ -668,13 +851,26 @@ static void esp32h4_machine_init(MachineState *machine)
 
     esp32h4_load_firmware(machine);
 
-    qdev_realize(DEVICE(&ms->soc), NULL, &error_fatal);
+    for (unsigned i = 0; i < ms->num_cpus; i++) {
+        qdev_realize(DEVICE(&ms->cpu[i]), NULL, &error_fatal);
+    }
 
     qbus_init(&ms->periph_bus, sizeof(ms->periph_bus),
-              TYPE_SYSTEM_BUS, DEVICE(&ms->soc), "esp32h4-periph-bus");
+              TYPE_SYSTEM_BUS, DEVICE(&ms->cpu[0]), "esp32h4-periph-bus");
 
-    qdev_init_gpio_in_named(DEVICE(&ms->soc), esp32h4_reset_request,
+    qdev_init_gpio_in_named(DEVICE(&ms->cpu[0]), esp32h4_reset_request,
                            ESP32H4_RESET_GPIO_NAME, 1);
+
+    /*
+     * MachineState is not a DeviceState, so the core1 control inputs are plain
+     * allocated IRQs rather than named qdev GPIOs.
+     */
+    qemu_irq core1_run_irq =
+        qemu_allocate_irq(esp32h4_core1_run_request, ms, 0);
+    qemu_irq core1_stall_irq =
+        qemu_allocate_irq(esp32h4_core1_stall_request, ms, 0);
+    qemu_irq core1_sw_reset_irq =
+        qemu_allocate_irq(esp32h4_core1_sw_reset_request, ms, 0);
 
     for (int i = 0; i < ESP32H4_UART_COUNT; ++i) {
         char name[16];
@@ -685,7 +881,12 @@ static void esp32h4_machine_init(MachineState *machine)
         qdev_prop_set_chr(DEVICE(&ms->uart[i]), "chardev", serial_hd(i));
     }
 
-    object_initialize_child(OBJECT(machine), "intmatrix", &ms->intmatrix, TYPE_ESP32H4_INTMATRIX);
+    for (unsigned i = 0; i < ms->num_cpus; i++) {
+        char name[24];
+        snprintf(name, sizeof(name), "intmatrix%u", i);
+        object_initialize_child(OBJECT(machine), name, &ms->intmatrix[i],
+                                TYPE_ESP32H4_INTMATRIX);
+    }
     object_initialize_child(OBJECT(machine), "intpri", &ms->intpri, TYPE_ESP32H4_INTPRI);
     object_initialize_child(OBJECT(machine), "gpio", &ms->gpio, TYPE_ESP32H4_GPIO);
     object_initialize_child(OBJECT(machine), "efuse", &ms->efuse, TYPE_ESP32H4_EFUSE);
@@ -712,21 +913,55 @@ static void esp32h4_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "i2c_ana_mst", &ms->i2c_ana_mst, TYPE_ESP32H4_I2C_ANA_MST);
     object_initialize_child(OBJECT(machine), "modem_lpcon", &ms->modem, TYPE_ESP32H4_MODEM);
 
-    /* Interrupt matrix + CLIC */
-    DeviceState *intmatrix_dev = DEVICE(&ms->intmatrix);
-    {
-        object_property_set_link(OBJECT(&ms->intmatrix), "cpu", OBJECT(&ms->soc), &error_abort);
-        sysbus_realize(SYS_BUS_DEVICE(&ms->intmatrix), &error_fatal);
+    /*
+     * One interrupt matrix + CLIC per HP core. The matrices are mapped at
+     * distinct addresses (core1's at INTMTX1) because IDF programs either
+     * core's mapping registers from whichever core it happens to be running
+     * on. The CLICs are the opposite: each core reaches its own at
+     * DR_REG_CLIC_BASE and the other core's at DR_REG_CLIC_CORE1_BASE, so they
+     * go into the per-hart address spaces rather than the shared system map.
+     */
+    const hwaddr intmatrix_base[ESP32H4_CPU_COUNT] = {
+        DR_REG_INTERRUPT_BASE, DR_REG_INTERRUPT_CORE1_BASE
+    };
+    for (unsigned i = 0; i < ms->num_cpus; i++) {
+        object_property_set_link(OBJECT(&ms->intmatrix[i]), "cpu",
+                                 OBJECT(&ms->cpu[i]), &error_abort);
+        sysbus_realize(SYS_BUS_DEVICE(&ms->intmatrix[i]), &error_fatal);
 
-        MemoryRegion *map_mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->intmatrix), 0);
-        memory_region_add_subregion_overlap(sys_mem, DR_REG_INTERRUPT_BASE, map_mr, 0);
+        MemoryRegion *map_mr =
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->intmatrix[i]), 0);
+        memory_region_add_subregion_overlap(sys_mem, intmatrix_base[i],
+                                            map_mr, 0);
 
-        MemoryRegion *clic_mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->intmatrix), 1);
-        memory_region_add_subregion_overlap(sys_mem, DR_REG_CLIC_BASE, clic_mr, 0);
+        MemoryRegion *clic_mr =
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->intmatrix[i]), 1);
 
-        for (int i = 0; i <= ESP32H4_CPU_INT_COUNT; i++) {
-            qemu_irq cpu_input = qdev_get_gpio_in_named(DEVICE(&ms->soc), ESP_CPU_IRQ_LINES_NAME, i);
-            qdev_connect_gpio_out_named(intmatrix_dev, ESP32H4_INT_MATRIX_OUTPUT_NAME, i, cpu_input);
+        for (unsigned view = 0; view < ms->num_cpus; view++) {
+            const hwaddr base = (view == i) ? DR_REG_CLIC_BASE
+                                            : DR_REG_CLIC_CORE1_BASE;
+            MemoryRegion *mr;
+
+            if (view == i) {
+                mr = clic_mr;
+            } else {
+                char name[48];
+                snprintf(name, sizeof(name), "esp32h4.clic%u-from-cpu%u",
+                         i, view);
+                mr = g_new(MemoryRegion, 1);
+                memory_region_init_alias(mr, OBJECT(machine), name, clic_mr, 0,
+                                         memory_region_size(clic_mr));
+            }
+            memory_region_add_subregion_overlap(&ms->cpu_mem[view], base, mr, 1);
+        }
+
+        for (int line = 0; line <= ESP32H4_CPU_INT_COUNT; line++) {
+            qemu_irq cpu_input = qdev_get_gpio_in_named(DEVICE(&ms->cpu[i]),
+                                                        ESP_CPU_IRQ_LINES_NAME,
+                                                        line);
+            qdev_connect_gpio_out_named(DEVICE(&ms->intmatrix[i]),
+                                        ESP32H4_INT_MATRIX_OUTPUT_NAME,
+                                        line, cpu_input);
         }
     }
 
@@ -759,7 +994,7 @@ static void esp32h4_machine_init(MachineState *machine)
             MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->uart[i]), 0);
             memory_region_add_subregion_overlap(sys_mem, uart_base[i], mr, 0);
             sysbus_connect_irq(SYS_BUS_DEVICE(&ms->uart[i]), 0,
-                               qdev_get_gpio_in(intmatrix_dev, H4_ETS_UART0_INTR_SOURCE + i));
+                               esp32h4_intmatrix_in(ms, H4_ETS_UART0_INTR_SOURCE + i));
         }
     }
 
@@ -778,14 +1013,16 @@ static void esp32h4_machine_init(MachineState *machine)
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->efuse), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_EFUSE_BASE, mr, 1);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->efuse), 0,
-                           qdev_get_gpio_in(intmatrix_dev, H4_ETS_EFUSE_INTR_SOURCE));
+                           esp32h4_intmatrix_in(ms, H4_ETS_EFUSE_INTR_SOURCE));
     }
 
-    /* PCR */
+    /* PCR — also gates HP core1 */
     {
         sysbus_realize(SYS_BUS_DEVICE(&ms->pcr), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->pcr), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSCON_BASE, mr, 0);
+        qdev_connect_gpio_out_named(DEVICE(&ms->pcr),
+            ESP32H4_PCR_CORE1_RUN_GPIO, 0, core1_run_irq);
     }
 
     /* LP domain */
@@ -794,8 +1031,12 @@ static void esp32h4_machine_init(MachineState *machine)
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->lp), 0);
         memory_region_add_subregion_overlap(sys_mem, ESP32H4_LP_BASE, mr, 0);
         qdev_connect_gpio_out_named(DEVICE(&ms->lp), ESP32H4_LP_RESET_GPIO, 0,
-                                    qdev_get_gpio_in_named(DEVICE(&ms->soc),
+                                    qdev_get_gpio_in_named(DEVICE(&ms->cpu[0]),
                                         ESP32H4_RESET_GPIO_NAME, 0));
+        qdev_connect_gpio_out_named(DEVICE(&ms->lp),
+            ESP32H4_LP_CORE1_STALL_GPIO, 0, core1_stall_irq);
+        qdev_connect_gpio_out_named(DEVICE(&ms->lp),
+            ESP32H4_LP_CORE1_SW_RESET_GPIO, 0, core1_sw_reset_irq);
     }
 
     /* SPI0 MEM controller */
@@ -824,9 +1065,9 @@ static void esp32h4_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GDMA_BASE, mr, 0);
         for (int i = 0; i < ESP32H4_GDMA_CHANNEL_COUNT; i++) {
             qdev_connect_gpio_out_named(DEVICE(&ms->gdma), ESP_GDMA_IRQ_IN_NAME, i,
-                                        qdev_get_gpio_in(intmatrix_dev, H4_ETS_DMA_IN_CH0_INTR_SOURCE + i));
+                                        esp32h4_intmatrix_in(ms, H4_ETS_DMA_IN_CH0_INTR_SOURCE + i));
             qdev_connect_gpio_out_named(DEVICE(&ms->gdma), ESP_GDMA_IRQ_OUT_NAME, i,
-                                        qdev_get_gpio_in(intmatrix_dev, H4_ETS_DMA_OUT_CH0_INTR_SOURCE + i));
+                                        esp32h4_intmatrix_in(ms, H4_ETS_DMA_OUT_CH0_INTR_SOURCE + i));
         }
     }
 
@@ -837,7 +1078,7 @@ static void esp32h4_machine_init(MachineState *machine)
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->sha), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SHA_BASE, mr, 0);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->sha), 0,
-                           qdev_get_gpio_in(intmatrix_dev, H4_ETS_SHA_INTR_SOURCE));
+                           esp32h4_intmatrix_in(ms, H4_ETS_SHA_INTR_SOURCE));
     }
 
     /* MODEM_LPCON */
@@ -847,11 +1088,20 @@ static void esp32h4_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, ESP32H4_MODEM_BASE, mr, 0);
     }
 
-    /* System clock */
+    /* System clock, plus the HP_SYSTEM words the C3 window swallows */
     {
         sysbus_realize(SYS_BUS_DEVICE(&ms->clock), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->clock), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSTEM_BASE, mr, 0);
+        /* APPCPU_BOOT_ADDR — ROM core1 polls this */
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_HP_SYSTEM_BASE + 0x84,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->clock), 1), 1);
+        /* CORE_DEBUG_RUNSTALL_CONF — unstall spins on CORE1_RUNSTALLED */
+        memory_region_init_io(&ms->runstall_mmio, OBJECT(ms),
+                              &esp32h4_runstall_ops, ms,
+                              "esp32h4.hp_system.runstall", 4);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_HP_SYSTEM_BASE + 0x40,
+                                            &ms->runstall_mmio, 1);
     }
 
     /* INTPRI */
@@ -862,7 +1112,7 @@ static void esp32h4_machine_init(MachineState *machine)
 
         for (int i = 0; i < ESP32H4_INTPRI_CPU_INTR_COUNT; i++) {
             sysbus_connect_irq(SYS_BUS_DEVICE(&ms->intpri), i,
-                               qdev_get_gpio_in(intmatrix_dev, H4_ETS_FROM_CPU_INTR0_SOURCE + i));
+                               esp32h4_intmatrix_in(ms, H4_ETS_FROM_CPU_INTR0_SOURCE + i));
         }
     }
 
@@ -878,9 +1128,9 @@ static void esp32h4_machine_init(MachineState *machine)
         const int *src = tg == 0 ? tg0_src : tg1_src;
 
         qdev_connect_gpio_out_named(DEVICE(&ms->timg[tg]), ESP32H4_T0_IRQ_INTERRUPT, 0,
-                                    qdev_get_gpio_in(intmatrix_dev, src[0]));
+                                    esp32h4_intmatrix_in(ms, src[0]));
         qdev_connect_gpio_out_named(DEVICE(&ms->timg[tg]), ESP32H4_WDT_IRQ_INTERRUPT, 0,
-                                    qdev_get_gpio_in(intmatrix_dev, src[1]));
+                                    esp32h4_intmatrix_in(ms, src[1]));
 
         const int wdt_reset_reason = tg == 0 ? ESP32H4_CORE_MWDT0 : ESP32H4_CORE_MWDT1;
         qdev_connect_gpio_out_named(DEVICE(&ms->timg[tg]), ESP32H4_WDT_IRQ_RESET, 0,
@@ -894,7 +1144,7 @@ static void esp32h4_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSTIMER_BASE, mr, 0);
         for (int i = 0; i < ESP_SYSTIMER_IRQ_COUNT; i++) {
             sysbus_connect_irq(SYS_BUS_DEVICE(&ms->systimer), i,
-                               qdev_get_gpio_in(intmatrix_dev, H4_ETS_SYSTIMER_TARGET0_INTR_SOURCE + i));
+                               esp32h4_intmatrix_in(ms, H4_ETS_SYSTIMER_TARGET0_INTR_SOURCE + i));
         }
     }
 
@@ -908,8 +1158,10 @@ static void esp32h4_machine_class_init(ObjectClass *oc, void *data)
     mc->desc = "Espressif ESP32-H4 machine";
     mc->default_cpu_type = TYPE_ESP_RISCV_CPU;
     mc->init = esp32h4_machine_init;
-    mc->max_cpus = 1;
-    mc->default_cpus = 1;
+    /* Both HP cores; -smp 1 brings up core0 only */
+    mc->min_cpus = 1;
+    mc->max_cpus = ESP32H4_CPU_COUNT;
+    mc->default_cpus = ESP32H4_CPU_COUNT;
     mc->default_ram_size = 320 * 1024;
 }
 

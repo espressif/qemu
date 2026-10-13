@@ -28,12 +28,17 @@
 #define LP_AON_STORE4_REG      0x2810
 #define LP_AON_SYS_CFG_REG     0x2834
 #define LP_AON_HPSYS_SW_RESET_BIT (1U << 31)
-#define LP_AON_CPUCORE0_CFG_REG 0x2838
+#define LP_AON_CPUCORE_CFG_REG 0x2838
+#define LP_AON_CPUCORE_CFG_RST 0x04000400
 #define LP_AON_CPU_CORE0_SW_RESET_BIT  (1U << 8)
+#define LP_AON_CPU_CORE1_SW_RESET_BIT  (1U << 24)
+#define LP_AON_CPU_CORE1_SW_STALL_S    16
+#define LP_AON_STALL_CODE              0x86
 
 #define LP_CLKRST_BASE         0x3000
 #define LP_CLKRST_END          0x3100
 #define LP_CLKRST_RESET_CAUSE_REG  0x3010
+#define LP_CLKRST_RESET_CORE1_CAUSE_REG  0x3014
 
 #define LP_TIMER_BASE          0x5000
 #define LP_TIMER_END           0x5100
@@ -63,7 +68,13 @@ static uint64_t esp32h4_lp_read(void *opaque, hwaddr addr, unsigned int size)
     }
 
     if (addr >= LP_CLKRST_BASE && addr < LP_CLKRST_END) {
-        if (addr == LP_CLKRST_RESET_CAUSE_REG) {
+        if (addr == LP_CLKRST_RESET_CAUSE_REG ||
+            addr == LP_CLKRST_RESET_CORE1_CAUSE_REG) {
+            /*
+             * CORE0_RESET_CAUSE / CORE1_RESET_CAUSE in bits[4:0], flag in
+             * bit 5. The ROM start-up code reads the register matching its
+             * own mhartid; both HP cores share the reset events we model.
+             */
             r = (s->reset_reason & 0x1F) | (1 << 5);
         }
         return r;
@@ -72,6 +83,8 @@ static uint64_t esp32h4_lp_read(void *opaque, hwaddr addr, unsigned int size)
     if (addr >= LP_AON_BASE && addr < LP_AON_END) {
         if (addr == LP_AON_STORE4_REG) {
             r = 0x00200020; /* 32 MHz XTAL hint */
+        } else if (addr == LP_AON_CPUCORE_CFG_REG) {
+            r = s->cpucore_cfg;
         }
         return r;
     }
@@ -101,10 +114,19 @@ static void esp32h4_lp_write(void *opaque, hwaddr addr, uint64_t value,
         if (value & LP_AON_HPSYS_SW_RESET_BIT) {
             esp32h4_lp_reset_request(opaque, ESP32H4_CORE_SW, 1);
         }
-    } else if (addr == LP_AON_CPUCORE0_CFG_REG) {
+    } else if (addr == LP_AON_CPUCORE_CFG_REG) {
+        /* SW_RESET bits are write-to-trigger and do not latch. */
         if (value & LP_AON_CPU_CORE0_SW_RESET_BIT) {
             esp32h4_lp_reset_request(opaque, ESP32H4_CORE_SW, 1);
         }
+        if (value & LP_AON_CPU_CORE1_SW_RESET_BIT) {
+            qemu_irq_pulse(s->core1_sw_reset);
+        }
+        s->cpucore_cfg = (uint32_t)value &
+            ~(LP_AON_CPU_CORE0_SW_RESET_BIT | LP_AON_CPU_CORE1_SW_RESET_BIT);
+        const uint8_t code =
+            (s->cpucore_cfg >> LP_AON_CPU_CORE1_SW_STALL_S) & 0xff;
+        qemu_set_irq(s->core1_stall, code == LP_AON_STALL_CODE);
     }
 }
 
@@ -124,7 +146,10 @@ static void esp32h4_lp_reset_hold(Object *obj, ResetType type)
         first_boot = false;
     }
 
+    s->cpucore_cfg = LP_AON_CPUCORE_CFG_RST;
+
     qemu_irq_lower(s->cpu_reset);
+    qemu_irq_lower(s->core1_stall);
 }
 
 static void esp32h4_lp_init(Object *obj)
@@ -138,8 +163,13 @@ static void esp32h4_lp_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     qdev_init_gpio_in(DEVICE(s), esp32h4_lp_reset_request, ESP32H4_RESET_REASON_MAX);
     qdev_init_gpio_out_named(DEVICE(s), &s->cpu_reset, ESP32H4_LP_RESET_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(s), &s->core1_stall,
+                             ESP32H4_LP_CORE1_STALL_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(s), &s->core1_sw_reset,
+                             ESP32H4_LP_CORE1_SW_RESET_GPIO, 1);
 
     s->reset_reason = ESP32H4_CHIP_POWER_ON;
+    s->cpucore_cfg = LP_AON_CPUCORE_CFG_RST;
 }
 
 static void esp32h4_lp_class_init(ObjectClass *klass, void *data)
