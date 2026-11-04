@@ -122,6 +122,37 @@ static void esp32_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, uns
     }
 }
 
+/*
+ * DPORT_PRO_INTR_STATUS_0..2 are followed by DPORT_APP_INTR_STATUS_0..2. Each
+ * bit is the raw level of source 32 * word + bit, the same for both CPUs.
+ */
+static uint64_t esp32_intmatrix_status_read(void *opaque, hwaddr addr,
+                                            unsigned int size)
+{
+    Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
+    const int word = (addr / sizeof(uint32_t)) % ESP32_INT_MATRIX_STATUS_WORDS;
+    uint32_t status = 0;
+    for (int bit = 0; bit < 32; ++bit) {
+        const int source = word * 32 + bit;
+        if (source < ESP32_INT_MATRIX_INPUTS && test_bit(source, s->irq_levels)) {
+            status |= BIT(bit);
+        }
+    }
+    return status;
+}
+
+static void esp32_intmatrix_status_write(void *opaque, hwaddr addr,
+                                         uint64_t value, unsigned int size)
+{
+    /* INTR_STATUS registers are read-only */
+}
+
+static const MemoryRegionOps esp_intmatrix_status_ops = {
+    .read =  esp32_intmatrix_status_read,
+    .write = esp32_intmatrix_status_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
 static const MemoryRegionOps esp_intmatrix_ops = {
     .read =  esp32_intmatrix_read,
     .write = esp32_intmatrix_write,
@@ -170,6 +201,11 @@ static void esp32_intmatrix_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &esp_intmatrix_ops, s,
                           TYPE_ESP32_INTMATRIX, ESP32_INT_MATRIX_INPUTS * ESP32_CPU_COUNT * sizeof(uint32_t));
     sysbus_init_mmio(sbd, &s->iomem);
+    memory_region_init_io(&s->status_iomem, obj, &esp_intmatrix_status_ops, s,
+                          TYPE_ESP32_INTMATRIX ".status",
+                          ESP32_CPU_COUNT * ESP32_INT_MATRIX_STATUS_WORDS *
+                          sizeof(uint32_t));
+    sysbus_init_mmio(sbd, &s->status_iomem);
 
     qdev_init_gpio_in(DEVICE(s), esp32_intmatrix_irq_handler, ESP32_INT_MATRIX_INPUTS);
 }

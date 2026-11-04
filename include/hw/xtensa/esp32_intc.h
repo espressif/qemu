@@ -24,6 +24,9 @@
 
 #define ESP32_CPU_COUNT 2
 #define ESP32_INT_MATRIX_INPUTS 69
+/* DPORT_{PRO,APP}_INTR_STATUS_{0,1,2}_REG, relative to the DPORT base */
+#define ESP32_INT_MATRIX_STATUS_OFFSET 0xEC
+#define ESP32_INT_MATRIX_STATUS_WORDS 3
 
 #define TYPE_ESP32_INTMATRIX "misc.esp32.intmatrix"
 #define ESP32_INTMATRIX(obj) OBJECT_CHECK(Esp32IntMatrixState, (obj), TYPE_ESP32_INTMATRIX)
@@ -33,6 +36,7 @@ typedef struct Esp32IntMatrixState {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
+    MemoryRegion status_iomem;
     qemu_irq *outputs[ESP32_CPU_COUNT];
     uint8_t irq_map[ESP32_CPU_COUNT][ESP32_INT_MATRIX_INPUTS];
     /* Current level of every input (source) line */
