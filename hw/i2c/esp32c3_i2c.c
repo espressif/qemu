@@ -255,6 +255,27 @@ static void esp32c3_i2c_write(void *opaque, hwaddr addr, uint64_t value, unsigne
 }
 
 /*
+ * Is `pad` free for I2C to use -- either driven by nothing in particular
+ * (SIG_GPIO_OUT_IDX, the reset state and what the pad looks like before the
+ * I2C driver claims it) or driven by I2C itself? A different peripheral's
+ * output signal means contention.
+ */
+static bool esp32c3_i2c_pad_undriven(Esp32C3I2CState *s, int pad, unsigned i2c_sig)
+{
+    if (pad < 0) {
+        return true;
+    }
+    int sig = esp32c3_gpio_pad_out_signal(s->gpio, pad);
+    if (sig < 0 || sig == ESP32C3_SIG_GPIO_OUT_IDX || sig == (int)i2c_sig) {
+        return true;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "esp32c3_i2c: pad %d is driven by signal %d, not I2C (%u) -- "
+                  "bus unusable\n", pad, sig, i2c_sig);
+    return false;
+}
+
+/*
  * Is the controller currently routed to the pads the simulated board's bus is
  * wired to? Fails open in two cases that both have to keep working: no
  * "i2c-pads" given at all, and a guest that has not routed I2C through the
@@ -278,6 +299,23 @@ static bool esp32c3_i2c_pads_match(Esp32C3I2CState *s)
         return false;
     }
     if (s->board_sda >= 0 && sda >= 0 && sda != s->board_sda) {
+        return false;
+    }
+
+    /*
+     * Routed to us is not the same as usable: another peripheral can have
+     * taken the pad on the OUT side while our in-sel entries still point at
+     * it, so the checks above pass and the bus looks healthy.
+     *
+     * That is exactly what a stale board I2S pin map does.
+     * i2s_channel_init_std_mode() points func_out_sel_cfg[pad] at an I2S
+     * signal and never touches I2CEXT0_*_IN_SEL, so without this the guest
+     * sees a working bus where real hardware sees a pad being actively driven
+     * push-pull and an open-drain I2C line that can no longer be pulled --
+     * i.e. every transaction timing out.
+     */
+    if (!esp32c3_i2c_pad_undriven(s, s->board_scl, ESP32C3_I2CEXT0_SCL_OUT_IDX) ||
+        !esp32c3_i2c_pad_undriven(s, s->board_sda, ESP32C3_I2CEXT0_SDA_OUT_IDX)) {
         return false;
     }
     return true;

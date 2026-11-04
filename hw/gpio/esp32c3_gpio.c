@@ -83,6 +83,14 @@ int esp32c3_gpio_signal_pad(ESP32C3GPIOState *s, unsigned sig)
     return -1;
 }
 
+int esp32c3_gpio_pad_out_signal(ESP32C3GPIOState *s, unsigned pad)
+{
+    if (pad >= ESP32C3_GPIO_COUNT) {
+        return -1;
+    }
+    return s->func_out_sel_cfg[pad] & GPIO_FUNC_OUT_SEL_MASK;
+}
+
 static void esp32c3_gpio_update_outputs(ESP32C3GPIOState *s, uint32_t old_out)
 {
     uint32_t changed = old_out ^ s->gpio_out;

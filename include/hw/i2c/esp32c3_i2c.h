@@ -34,6 +34,14 @@
 #define ESP32C3_I2CEXT0_SCL_IN_IDX  53
 #define ESP32C3_I2CEXT0_SDA_IN_IDX  54
 
+/*
+ * The matching OUT indices, used to check that nothing else has taken the
+ * board's pads on the output side. On the C3 the in and out tables share a
+ * signal number, hence the identical values.
+ */
+#define ESP32C3_I2CEXT0_SCL_OUT_IDX 53
+#define ESP32C3_I2CEXT0_SDA_OUT_IDX 54
+
 typedef struct Esp32C3I2CState {
     SysBusDevice parent_obj;
 
