@@ -1,8 +1,11 @@
 /*
- * Bare-metal ESP32-C3 I2C controller test for the QEMU model.
+ * Bare-metal ESP32-C3 I2C test for the QEMU model.
  *
- * Run it with ./run.sh; see README.md for what it covers and why it is not a
- * qtest.
+ * Two modes, built from this one file and run as two guests by ./run.sh:
+ * the default drives the I2C controller through its registers, and
+ * -DTEST_BITBANG instead bit-bangs the pads with plain GPIO, the way a
+ * software I2C master does. See README.md for what each covers and why this
+ * is not a qtest.
  *
  * Copyright (c) 2026 Oroblanco Inc.
  *
@@ -16,6 +19,7 @@
 
 #define UART0        0x60000000u
 #define I2C0         0x60013000u
+#define GPIO0        0x60004000u
 #define A_CTR        0x04
 #define A_SR         0x08
 #define A_FIFO_CONF  0x18
@@ -44,6 +48,11 @@ static void hex2(uint32_t v)
     putc_(d[(v >> 4) & 0xf]);
     putc_(d[v & 0xf]);
 }
+
+static int fails;
+
+#ifndef TEST_BITBANG
+
 static void hex4(uint32_t v) { hex2(v >> 8); hex2(v); }
 
 static uint32_t cmd(uint32_t op, uint32_t byte_num, uint32_t ack_en)
@@ -102,8 +111,6 @@ static void write_reg(uint8_t addr, uint8_t reg, uint8_t val)
     REG(I2C0 + A_CMD + 8) = cmd(OP_STOP, 0, 0);
     REG(I2C0 + A_CTR) = CTR_MS_MODE | CTR_TRANS_START;
 }
-
-static int fails;
 
 static void check_probe(uint8_t addr, int expect_ack)
 {
@@ -205,10 +212,163 @@ static void check_clr_bus(void)
     }
 }
 
+#else /* TEST_BITBANG */
+
+/*
+ * A software I2C master, toggling two pads with plain GPIO writes and never
+ * touching the I2C controller. This is what MicroPython's SoftI2C does, and
+ * what oro's board autodetection probes the bus with before it knows which
+ * board it is on.
+ *
+ * Open-drain is expressed the way the GPIO model understands it: clearing the
+ * OUT bit drives the pad low, setting it releases the pad. A released pad
+ * reads back high unless something on the bus is pulling it down, which is
+ * how a slave's ACK arrives. No delays anywhere -- the emulated bus is
+ * edge-driven, not timed.
+ */
+#define A_GPIO_OUT_W1TS     0x08
+#define A_GPIO_OUT_W1TC     0x0c
+#define A_GPIO_ENABLE_W1TS  0x24
+#define A_GPIO_IN           0x3c
+
+static void bb_set(int pad, int level)
+{
+    if (level) {
+        REG(GPIO0 + A_GPIO_OUT_W1TS) = 1u << pad;
+    } else {
+        REG(GPIO0 + A_GPIO_OUT_W1TC) = 1u << pad;
+    }
+}
+
+static int bb_get(int pad)
+{
+    return (int)((REG(GPIO0 + A_GPIO_IN) >> pad) & 1u);
+}
+
+/* The pad pair in use, so a test can bit-bang somewhere the bus is not. */
+static int bb_scl, bb_sda;
+
+static void bb_pads(int scl, int sda)
+{
+    bb_scl = scl;
+    bb_sda = sda;
+    /* Output enable is stored but not consulted by the model; set it anyway. */
+    REG(GPIO0 + A_GPIO_ENABLE_W1TS) = (1u << scl) | (1u << sda);
+    bb_set(sda, 1);
+    bb_set(scl, 1);
+}
+
+static void bb_start(void)
+{
+    bb_set(bb_sda, 1);
+    bb_set(bb_scl, 1);
+    bb_set(bb_sda, 0);  /* SDA falls while SCL is high */
+}
+
+static void bb_stop(void)
+{
+    bb_set(bb_scl, 0);
+    bb_set(bb_sda, 0);
+    bb_set(bb_scl, 1);
+    bb_set(bb_sda, 1);  /* SDA rises while SCL is high */
+}
+
+/* Returns 1 if the slave ACKed. */
+static int bb_write_byte(uint8_t b)
+{
+    int ack;
+
+    for (int i = 7; i >= 0; i--) {
+        bb_set(bb_scl, 0);
+        bb_set(bb_sda, (b >> i) & 1);
+        bb_set(bb_scl, 1);
+    }
+    /* Release SDA and sample it on the ninth clock: low means ACK. */
+    bb_set(bb_scl, 0);
+    bb_set(bb_sda, 1);
+    bb_set(bb_scl, 1);
+    ack = !bb_get(bb_sda);
+    bb_set(bb_scl, 0);
+    return ack;
+}
+
+static uint8_t bb_read_byte(int ack)
+{
+    uint8_t v = 0;
+
+    for (int i = 0; i < 8; i++) {
+        bb_set(bb_scl, 0);
+        bb_set(bb_sda, 1);  /* the slave drives, so stay off the line */
+        bb_set(bb_scl, 1);
+        v = (uint8_t)((v << 1) | bb_get(bb_sda));
+    }
+    bb_set(bb_scl, 0);
+    bb_set(bb_sda, ack ? 0 : 1);
+    bb_set(bb_scl, 1);
+    bb_set(bb_scl, 0);
+    return v;
+}
+
+static void check_bb_probe(int scl, int sda, uint8_t addr, int expect_ack)
+{
+    int ack;
+
+    bb_pads(scl, sda);
+    bb_start();
+    ack = bb_write_byte((uint8_t)(addr << 1));
+    bb_stop();
+
+    puts_("bitbang pads "); hex2((uint32_t)scl); putc_('/');
+    hex2((uint32_t)sda);
+    puts_(" probe 0x"); hex2(addr);
+    puts_(ack ? " ACK " : " NACK");
+    if (ack == expect_ack) {
+        puts_(" ok\r\n");
+    } else {
+        puts_(" FAIL\r\n");
+        fails++;
+    }
+}
+
+static void check_bb_read(int scl, int sda, uint8_t addr, uint8_t reg,
+                          int expect)
+{
+    int ok;
+    uint8_t v;
+
+    bb_pads(scl, sda);
+    bb_start();
+    ok = bb_write_byte((uint8_t)(addr << 1));
+    ok = ok && bb_write_byte(reg);
+    /* Repeated start, then read one byte and NACK it to end the read. */
+    bb_start();
+    ok = ok && bb_write_byte((uint8_t)((addr << 1) | 1));
+    v = bb_read_byte(0);
+    bb_stop();
+
+    puts_("bitbang read 0x"); hex2(addr); puts_("["); hex2(reg);
+    puts_("] val=");
+    if (!ok) {
+        puts_("nack");
+    } else {
+        puts_("0x"); hex2(v);
+    }
+    puts_(" expect=0x"); hex2((uint32_t)expect);
+    if (ok && v == (uint8_t)expect) {
+        puts_(" ok\r\n");
+    } else {
+        puts_(" FAIL\r\n");
+        fails++;
+    }
+}
+
+#endif /* TEST_BITBANG */
+
 void test_main(void)
 {
     puts_("I2CTEST START\r\n");
 
+#ifndef TEST_BITBANG
     check_probe(0x58, 1);
     check_probe(0x3a, 1);
     check_probe(0x08, 0);
@@ -232,6 +392,31 @@ void test_main(void)
     /* The controller must still be usable after both of those */
     check_probe(0x58, 1);
     check_read(0x3a, 0x00, 0x18);
+#else
+    /*
+     * Run with -machine esp32c3,i2c-pads=7/6, so 7/6 is where the simulated
+     * board's bus is and the bridge is bound there.
+     */
+    check_bb_probe(7, 6, 0x58, 1);
+    check_bb_probe(7, 6, 0x3a, 1);
+    check_bb_probe(7, 6, 0x08, 0);
+    /* A NACK must leave the bus usable */
+    check_bb_probe(7, 6, 0x58, 1);
+
+    check_bb_read(7, 6, 0x58, 0x10, 0x23);
+    check_bb_read(7, 6, 0x3a, 0x00, 0x18);
+
+    /*
+     * The case that makes board autodetection testable: bit-banging pads the
+     * board's bus is NOT wired to must find nothing, even though the chips are
+     * right there on the controller's bus. This is a Zero being probed on the
+     * ZeroC/One pair, and it is the dead-bus fallback the firmware relies on.
+     */
+    check_bb_probe(1, 2, 0x58, 0);
+    check_bb_probe(1, 2, 0x3a, 0);
+    /* ...and the real bus still works afterwards */
+    check_bb_probe(7, 6, 0x58, 1);
+#endif
 
     puts_(fails ? "I2CTEST FAILURES\r\n" : "I2CTEST ALL OK\r\n");
     for (;;) {
