@@ -111,6 +111,9 @@ struct Esp32C3MachineState {
     /* "i2c-pads" machine property: the board's I2C pad pair, "<scl>/<sda>" */
     char *i2c_pads;
 
+    /* "sd-cs" machine property: the pad the board's SD chip select sits on */
+    char *sd_cs;
+
     /* SD card ssi-sd device for GPIO CS routing */
     DeviceState *sd_ssi_dev;
 
@@ -125,6 +128,13 @@ struct Esp32C3MachineState {
 
 /* Temporary macro to mark the CPU as in non-debugging mode */
 #define A_ASSIST_DEBUG_CORE_0_DEBUG_MODE_REG    0x098
+
+/*
+ * Pad the SD card chip select sits on when "sd-cs" is not given. 10 is the pad
+ * this machine wired unconditionally before the property existed, so every
+ * invocation that predates it keeps the line it had.
+ */
+#define ESP32C3_SD_CS_PAD_DEFAULT   10
 
 /* Create a macro which defines the name of our new machine class */
 #define TYPE_ESP32C3_MACHINE MACHINE_TYPE_NAME("esp32c3")
@@ -429,6 +439,19 @@ static void esp32c3_pad_i2c_connect(Esp32C3MachineState *ms, int scl, int sda)
     }
 }
 
+static int esp32c3_sd_cs_pad(const Esp32C3MachineState *ms)
+{
+    int pad;
+
+    if (ms->sd_cs == NULL || ms->sd_cs[0] == '\0') {
+        return ESP32C3_SD_CS_PAD_DEFAULT;
+    }
+
+    /* Already validated by esp32c3_machine_set_sd_cs() */
+    sscanf(ms->sd_cs, "%d", &pad);
+    return pad;
+}
+
 static void esp32c3_machine_init(MachineState *machine)
 {
     /* First thing to do is to check if a drive format and a file ahve been passed through the command line.
@@ -649,12 +672,16 @@ static void esp32c3_machine_init(MachineState *machine)
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->gpio), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
 
-        /* Connect GPIO 10 to SD card CS (ssi-sd device) if SD card is attached.
-         * The ESP-IDF SDSPI driver controls CS via GPIO, not hardware SPI CS.
-         * GPIO 10 is the CS pin used by the OROBLANCO_ONE_C3 board in QEMU mode. */
+        /* Connect the board's CS pad to SD card CS (ssi-sd device) if an SD
+         * card is attached. The ESP-IDF SDSPI driver controls CS via GPIO, not
+         * hardware SPI CS, so this is the line that actually selects the card.
+         * Which pad it is belongs to the board, hence "sd-cs"; the firmware's
+         * SD_CS has to name the same one. */
         if (ms->sd_ssi_dev) {
-            qemu_log("Connecting GPIO 10 to SD card CS\n");
-            qdev_connect_gpio_out_named(DEVICE(&ms->gpio), ESP32C3_GPIO_OUT_IRQ, 10,
+            const int cs_pad = esp32c3_sd_cs_pad(ms);
+
+            qemu_log("Connecting GPIO %d to SD card CS\n", cs_pad);
+            qdev_connect_gpio_out_named(DEVICE(&ms->gpio), ESP32C3_GPIO_OUT_IRQ, cs_pad,
                                         qdev_get_gpio_in_named(ms->sd_ssi_dev, SSI_GPIO_CS, 0));
         }
     }
@@ -905,6 +932,39 @@ static void esp32c3_machine_set_i2c_pads(Object *obj, const char *value,
     ms->i2c_pads = g_strdup(value);
 }
 
+static char *esp32c3_machine_get_sd_cs(Object *obj, Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+
+    return g_strdup(ms->sd_cs);
+}
+
+/*
+ * "sd-cs=<pad>" states which pad drives the SD card's chip select. Like
+ * "i2c-pads" this is a fact about the board rather than about the card, and
+ * the card is attached at the SPI bus level, so CS is the only SD pin the
+ * emulator and the firmware have to agree on. Omit it for the historical pad.
+ */
+static void esp32c3_machine_set_sd_cs(Object *obj, const char *value,
+                                      Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+    int pad;
+    char extra;
+
+    if (value != NULL && value[0] != '\0') {
+        if (sscanf(value, "%d%c", &pad, &extra) != 1 ||
+            pad < 0 || pad >= ESP32C3_GPIO_COUNT) {
+            error_setg(errp, "sd-cs: expected a single pad in 0..%d, got '%s'",
+                       ESP32C3_GPIO_COUNT - 1, value);
+            return;
+        }
+    }
+
+    g_free(ms->sd_cs);
+    ms->sd_cs = g_strdup(value);
+}
+
 static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -928,6 +988,12 @@ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
                                   esp32c3_machine_set_i2c_pads);
     object_class_property_set_description(oc, "i2c-pads",
         "pads the board's I2C bus is wired to: <scl>/<sda>, e.g. 7/6");
+
+    object_class_property_add_str(oc, "sd-cs",
+                                  esp32c3_machine_get_sd_cs,
+                                  esp32c3_machine_set_sd_cs);
+    object_class_property_set_description(oc, "sd-cs",
+        "pad driving the SD card chip select, e.g. 4 (default 10)");
 }
 
 /* Create a new type of machine ("child class") */
