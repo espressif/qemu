@@ -31,6 +31,8 @@ typedef struct Esp32SocState {
 
     /*< public >*/
     XtensaCPU cpu[ESP32_CPU_COUNT];
+    /* Drives both CPU clk-in inputs, so rate changes reach their callbacks */
+    Clock *cpu_clk;
     Esp32DportState dport;
     Esp32IntMatrixState intmatrix;
     Esp32CrosscoreInt crosscore_int;

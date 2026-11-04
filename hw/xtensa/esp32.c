@@ -10,6 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "hw/qdev-clock.h"
 #include "qemu/error-report.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
@@ -241,8 +242,7 @@ static void esp32_clk_update(void* opaque, int n, int level)
     qdev_prop_set_int32(DEVICE(&s->frc_timer), "apb_freq", apb_clk_freq);
     qdev_prop_set_int32(DEVICE(&s->timg[0]), "apb_freq", apb_clk_freq);
     qdev_prop_set_int32(DEVICE(&s->timg[1]), "apb_freq", apb_clk_freq);
-    clock_update_hz(s->cpu[0].clock, cpu_clk_freq );
-    clock_update_hz(s->cpu[1].clock, cpu_clk_freq );
+    clock_update_hz(s->cpu_clk, cpu_clk_freq);
 }
 
 static void esp32_soc_add_periph_device(MemoryRegion *dest, void* dev, hwaddr dport_base_addr)
@@ -572,6 +572,12 @@ static void esp32_soc_init(Object *obj)
 
         const uint32_t cpuid[ESP32_CPU_COUNT] = { 0xcdcd, 0xabab };
         s->cpu[i].env.sregs[PRID] = cpuid[i];
+
+        if (i == 0) {
+            s->cpu_clk = clock_new(obj, "cpu-clk");
+            clock_set_hz(s->cpu_clk, clock_get_hz(s->cpu[0].clock));
+        }
+        qdev_connect_clock_in(DEVICE(&s->cpu[i]), "clk-in", s->cpu_clk);
 
         snprintf(name, sizeof(name), "cpu%d-mem", i);
         memory_region_init(&s->cpu_specific_mem[i], NULL, name, UINT32_MAX);

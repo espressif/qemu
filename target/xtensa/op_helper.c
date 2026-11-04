@@ -46,6 +46,34 @@ void HELPER(update_ccount)(CPUXtensaState *env)
         (uint32_t)clock_ns_to_ticks(cpu->clock, now - env->time_base);
 }
 
+/*
+ * CCOUNT is derived from virtual time at the clk-in rate. Rebase it before a
+ * rate change so that the elapsed time is not rescaled (the counter must stay
+ * continuous, as on hardware), then move pending CCOMPARE deadlines to the
+ * new rate. Pending timer interrupts are kept.
+ */
+void xtensa_cpu_clock_changed(void *opaque, ClockEvent event)
+{
+    XtensaCPU *cpu = opaque;
+    CPUXtensaState *env = &cpu->env;
+
+    if (event == ClockPreUpdate) {
+        HELPER(update_ccount)(env);
+        env->ccount_base = env->sregs[CCOUNT];
+        env->time_base = env->ccount_time;
+        return;
+    }
+    HELPER(update_ccount)(env);
+    for (unsigned i = 0; i < env->config->nccompare; ++i) {
+        if (env->ccompare[i].timer && timer_pending(env->ccompare[i].timer)) {
+            uint64_t dcc = (uint64_t)(env->sregs[CCOMPARE + i] -
+                                      env->sregs[CCOUNT] - 1) + 1;
+            timer_mod(env->ccompare[i].timer,
+                      env->ccount_time + clock_ticks_to_ns(cpu->clock, dcc));
+        }
+    }
+}
+
 void HELPER(wsr_ccount)(CPUXtensaState *env, uint32_t v)
 {
     int i;
