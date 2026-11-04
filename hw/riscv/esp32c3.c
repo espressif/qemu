@@ -52,6 +52,8 @@
 #include "hw/dma/esp32c3_gdma.h"
 #include "hw/audio/esp32c3_i2s.h"
 #include "hw/i2c/esp32c3_i2c.h"
+#include "hw/i2c/bitbang_i2c.h"
+#include "hw/irq.h"
 #include "hw/display/esp_rgb.h"
 #include "hw/net/can/esp32c3_twai.h"
 
@@ -61,6 +63,14 @@
 #define ESP32C3_RESET_GPIO_NAME     "esp32c3.machine.reset_gpio"
 #define MB (1024*1024)
 
+
+/* State for the bit-banged I2C bridge; see esp32c3_pad_i2c_connect() */
+typedef struct Esp32C3PadI2C {
+    bitbang_i2c_interface bitbang;
+    /* Pulls the SDA pad low in the GPIO model, so the guest can read an ACK */
+    qemu_irq sda_pad_in;
+    int sda_level;
+} Esp32C3PadI2C;
 
 /* Define a new "class" which derivates from "MachineState" */
 struct Esp32C3MachineState {
@@ -103,6 +113,9 @@ struct Esp32C3MachineState {
 
     /* SD card ssi-sd device for GPIO CS routing */
     DeviceState *sd_ssi_dev;
+
+    /* Bit-banged I2C on the board's pads, see esp32c3_pad_i2c_connect() */
+    Esp32C3PadI2C pad_i2c;
 };
 
 /* Fake register used by ESP-IDF application to determine whether the code is running on real hardware or on QEMU */
@@ -340,6 +353,82 @@ static void esp32c3_load_firmware(MachineState *machine)
 }
 
 
+/*
+ * Bit-banged I2C on the board's pads.
+ *
+ * Board autodetection probes the bus with MicroPython's SoftI2C before it
+ * knows which board it is running on: it toggles the two pads from software
+ * and never touches the I2C controller's registers. The controller model is
+ * driven through the GPIO matrix, so it never sees those toggles, and to a
+ * bit-banged probe the bus looks dead.
+ *
+ * This bridges the pads "i2c-pads" declares onto the same I2CBus the
+ * -device oro-i2c-chip slaves are already attached to, so one set of chip
+ * arguments serves both the controller and the probe. Binding to the declared
+ * pads rather than a pair of its own is what makes the interesting case work:
+ * a board whose bus is elsewhere (a Zero, probed on the ZeroC/One pair)
+ * correctly finds nothing, which is the dead-bus fallback worth being able to
+ * test.
+ */
+static void esp32c3_pad_i2c_set(void *opaque, int line, int level)
+{
+    Esp32C3PadI2C *s = opaque;
+    /*
+     * The return is the wired-AND of what the slave drives and the master's
+     * own last SDA, i.e. the level the pad actually sits at. Feeding that back
+     * as the pad's external level is a no-op while the guest is itself holding
+     * SDA low, and is the ACK once it has released it.
+     */
+    int sda = bitbang_i2c_set(&s->bitbang, line, level);
+
+    if (sda != s->sda_level) {
+        s->sda_level = sda;
+        qemu_set_irq(s->sda_pad_in, sda);
+    }
+}
+
+static void esp32c3_pad_i2c_connect(Esp32C3MachineState *ms, int scl, int sda)
+{
+    DeviceState *gpio = DEVICE(&ms->gpio);
+    const int pads[2] = { [BITBANG_I2C_SCL] = scl, [BITBANG_I2C_SDA] = sda };
+
+    /*
+     * One sink per out line, and qdev_connect_gpio_out_named() replaces
+     * silently -- so a pad already spoken for (the SD card chip select) would
+     * be stolen rather than refused.
+     */
+    for (int line = 0; line < 2; line++) {
+        if (qdev_get_gpio_out_connector(gpio, ESP32C3_GPIO_OUT_IRQ,
+                                        pads[line]) != NULL) {
+            error_report("i2c-pads: pad %d is already wired to another device "
+                         "on this machine (the SD card chip select?)",
+                         pads[line]);
+            exit(1);
+        }
+    }
+
+    bitbang_i2c_init(&ms->pad_i2c.bitbang, ms->i2c0.bus);
+    ms->pad_i2c.sda_level = 1;
+    ms->pad_i2c.sda_pad_in = qdev_get_gpio_in_named(gpio,
+                                                    ESP32C3_GPIO_EXT_OD_IRQ,
+                                                    sda);
+
+    /*
+     * BITBANG_I2C_SCL/SDA double as the line numbers, so the handler can pass
+     * what it is given straight through.
+     *
+     * The GPIO device pulses every out line low on reset, which can look like
+     * a START to the state machine when SDA happens to be the lower-numbered
+     * pad. Harmless: no transfer begins until eight bits have been clocked,
+     * and a real START resets both the state and the pending address.
+     */
+    for (int line = 0; line < 2; line++) {
+        qdev_connect_gpio_out_named(gpio, ESP32C3_GPIO_OUT_IRQ, pads[line],
+                                    qemu_allocate_irq(esp32c3_pad_i2c_set,
+                                                      &ms->pad_i2c, line));
+    }
+}
+
 static void esp32c3_machine_init(MachineState *machine)
 {
     /* First thing to do is to check if a drive format and a file ahve been passed through the command line.
@@ -517,7 +606,6 @@ static void esp32c3_machine_init(MachineState *machine)
          * Use -drive file=xxx.img,if=sd,index=1,format=raw to attach an SD image.
          * We use index=1 (unit=1) to avoid conflict with QEMU's default SD drive at unit=0. */
         DriveInfo *sd_dinfo = drive_get(IF_SD, 0, 1);
-        fprintf(stderr, "Checking for SD card drive: %p\n", sd_dinfo);
         if (sd_dinfo) {
             DeviceState *card_dev;
             BusState *spi_bus = qdev_get_child_bus(DEVICE(&ms->spi2), "spi");
@@ -675,13 +763,13 @@ static void esp32c3_machine_init(MachineState *machine)
 
     /* I2C0 realization */
     {
+        int scl = -1;
+        int sda = -1;
+
         /* Lets the controller resolve its current pads through the GPIO matrix */
         object_property_set_link(OBJECT(&ms->i2c0), "gpio", OBJECT(&ms->gpio),
                                  &error_abort);
         if (ms->i2c_pads != NULL && ms->i2c_pads[0] != '\0') {
-            int scl;
-            int sda;
-
             /* Already validated by esp32c3_machine_set_i2c_pads() */
             sscanf(ms->i2c_pads, "%d/%d", &scl, &sda);
             qdev_prop_set_int32(DEVICE(&ms->i2c0), "board-scl", scl);
@@ -692,6 +780,16 @@ static void esp32c3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2c0), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE));
+
+        /*
+         * The bus only exists after realize, and the pads only when the board
+         * declared them. No i2c-pads means no board bus to bit-bang onto,
+         * which is also what keeps the bare-metal register test -- which
+         * passes none, deliberately -- out of this path entirely.
+         */
+        if (scl >= 0 && sda >= 0) {
+            esp32c3_pad_i2c_connect(ms, scl, sda);
+        }
     }
 
     /* SHA realization */

@@ -122,6 +122,7 @@ config RISCV_ESP32C3
     select SSI
     select SSI_SD
     select I2C
+    select BITBANG_I2C
     imply I2C_DEVICES
 
 config RISCV_ESP32C6

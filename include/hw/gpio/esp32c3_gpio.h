@@ -24,12 +24,24 @@
 /* GPIO output IRQ name for connecting to external devices */
 #define ESP32C3_GPIO_OUT_IRQ "esp32c3-gpio-out"
 
+/*
+ * GPIO input IRQ name for an external device pulling a pad low, the
+ * open-drain case: level 0 means driven low from outside, level 1 released.
+ * There is no input latch in this model, so a pad otherwise reads back
+ * whatever the guest drives; this is the only way anything outside the guest
+ * can put a level on one.
+ */
+#define ESP32C3_GPIO_EXT_OD_IRQ "esp32c3-gpio-ext-od"
+
 typedef struct ESP32C3GPIOState {
     Esp32GpioState parent;
 
     /* GPIO output state */
     uint32_t gpio_out;
     uint32_t gpio_enable;
+
+    /* Pads an external device is pulling low (ESP32C3_GPIO_EXT_OD_IRQ) */
+    uint32_t ext_od_low;
 
     /* GPIO_FUNCn_IN_SEL_CFG: which pad each peripheral input signal reads */
     uint32_t func_in_sel_cfg[ESP32C3_GPIO_SIG_COUNT];

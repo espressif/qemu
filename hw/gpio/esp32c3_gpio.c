@@ -91,6 +91,22 @@ int esp32c3_gpio_pad_out_signal(ESP32C3GPIOState *s, unsigned pad)
     return s->func_out_sel_cfg[pad] & GPIO_FUNC_OUT_SEL_MASK;
 }
 
+/*
+ * An external device driving a pad low, or releasing it. Open-drain only:
+ * nothing can force a pad high, because on a real bus nothing does -- the
+ * pull-up and the guest's own output are what decide a released line.
+ */
+static void esp32c3_gpio_set_ext_od(void *opaque, int pad, int level)
+{
+    ESP32C3GPIOState *s = ESP32C3_GPIO(opaque);
+
+    if (level) {
+        s->ext_od_low &= ~(1u << pad);
+    } else {
+        s->ext_od_low |= 1u << pad;
+    }
+}
+
 static void esp32c3_gpio_update_outputs(ESP32C3GPIOState *s, uint32_t old_out)
 {
     uint32_t changed = old_out ^ s->gpio_out;
@@ -123,8 +139,14 @@ static uint64_t esp32c3_gpio_read(void *opaque, hwaddr addr, unsigned int size)
         r = parent->strap_mode;
         break;
     case GPIO_IN_REG:
-        /* Return output values as input (loopback for now) */
-        r = s->gpio_out;
+        /*
+         * No input latch is modelled, so a pad reads back what the guest
+         * drives -- minus any pad an external device is pulling low, which is
+         * the open-drain wired-AND a bit-banged I2C slave's ACK arrives on.
+         * With nothing attached ext_od_low is 0 and this is the plain
+         * loopback it has always been.
+         */
+        r = s->gpio_out & ~s->ext_od_low;
         break;
     case GPIO_FUNC_IN_SEL_CFG_FIRST ... GPIO_FUNC_IN_SEL_CFG_LAST:
         r = s->func_in_sel_cfg[(addr - GPIO_FUNC_IN_SEL_CFG_FIRST) / 4];
@@ -206,6 +228,7 @@ static void esp32c3_gpio_reset_hold(Object *obj, ResetType type)
 
     s->gpio_out = 0;
     s->gpio_enable = 0;
+    s->ext_od_low = 0;
     memset(s->func_in_sel_cfg, 0, sizeof(s->func_in_sel_cfg));
     for (int i = 0; i < ESP32C3_GPIO_COUNT; i++) {
         /* Reset default is SIG_GPIO_OUT_IDX: driven by GPIO, not a signal */
@@ -240,8 +263,13 @@ static void esp32c3_gpio_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(s), s->gpio_out_irq,
                              ESP32C3_GPIO_OUT_IRQ, ESP32C3_GPIO_COUNT);
 
+    /* ...and one input per pin, for a device pulling that pad low */
+    qdev_init_gpio_in_named(DEVICE(s), esp32c3_gpio_set_ext_od,
+                            ESP32C3_GPIO_EXT_OD_IRQ, ESP32C3_GPIO_COUNT);
+
     s->gpio_out = 0;
     s->gpio_enable = 0;
+    s->ext_od_low = 0;
 }
 
 static void esp32c3_gpio_class_init(ObjectClass *klass, void *data)
