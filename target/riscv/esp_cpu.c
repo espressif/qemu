@@ -95,6 +95,12 @@
 
 /* Espressif DSP extension CSRs (see IDF riscv/csr_dsp.h). */
 #define ESP_CPU_CSR_DSP_STATE     0x7f3
+
+/* State of the hardware loop and PIE coprocessors (see IDF riscv/csr_hwlp.h and
+ * riscv/csr_pie.h). Only the low two bits are implemented. */
+#define ESP_CPU_CSR_HWLP_STATE    0x7f1
+#define ESP_CPU_CSR_PIE_STATE     0x7f2
+#define ESP_CPU_COPROC_STATE_MASK 0x3
 #define ESP_CPU_CSR_DSP_XACC_L    0x806
 #define ESP_CPU_CSR_DSP_XACC_H    0x807
 #define ESP_CPU_CSR_DSP_SAR       0x809
@@ -230,6 +236,10 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = s->uintstatus;
     } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
         *ret_value = s->mintstatus;
+    } else if (csrno == ESP_CPU_CSR_HWLP_STATE) {
+        *ret_value = s->hwlp_state;
+    } else if (csrno == ESP_CPU_CSR_PIE_STATE) {
+        *ret_value = s->pie_state;
     } else if (csrno == ESP_CPU_CSR_DSP_STATE) {
         *ret_value = s->dsp_state;
     } else if (csrno == ESP_CPU_CSR_DSP_XACC_L) {
@@ -293,6 +303,10 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
         s->uintstatus = new_value;
     } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
         s->mintstatus = new_value;
+    } else if (csrno == ESP_CPU_CSR_HWLP_STATE) {
+        s->hwlp_state = new_value & ESP_CPU_COPROC_STATE_MASK;
+    } else if (csrno == ESP_CPU_CSR_PIE_STATE) {
+        s->pie_state = new_value & ESP_CPU_COPROC_STATE_MASK;
     } else if (csrno == ESP_CPU_CSR_DSP_STATE) {
         s->dsp_state = (uint32_t)new_value;
     } else if (csrno == ESP_CPU_CSR_DSP_XACC_L) {
@@ -668,6 +682,8 @@ static void esp_cpu_reset(void *opaque)
     memset(cpu->pmpaddr_hi, 0, sizeof(cpu->pmpaddr_hi));
     memset(cpu->mhcr, 0, sizeof(cpu->mhcr));
     cpu->mexstatus = 0;
+    cpu->hwlp_state = 0;
+    cpu->pie_state = 0;
     cpu->dsp_state = 0;
     cpu->dsp_xacc_l = 0;
     cpu->dsp_xacc_h = 0;
@@ -828,6 +844,11 @@ static void esp_cpu_init(Object *obj)
     riscv_set_csr_ops(ESP_CPU_CSR_MINTTHRESH,   &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_UINTSTATUS,   &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_MINTSTATUS,   &esp_cpu_csr_ops);
+
+    /* Coprocessor state CSRs (ESP32-P4).  Always registered; other SOCs never
+     * touch them. */
+    riscv_set_csr_ops(ESP_CPU_CSR_HWLP_STATE, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_PIE_STATE,  &esp_cpu_csr_ops);
 
     /* DSP extension CSRs (ESP32-H4 / P4).  Always registered; non-DSP SOCs
      * never touch them.  Default state 0 (Off) lets ISR probes skip the

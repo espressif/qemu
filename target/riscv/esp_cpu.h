@@ -164,6 +164,12 @@ typedef struct EspRISCVCPU {
     uint32_t dsp_sar;      /* 0x809 */
     uint32_t dsp_status;   /* 0x80a */
 
+    /* Hardware loop and PIE state (ESP32-P4).  IDF's FreeRTOS port turns both
+     * off at scheduler start.  The instructions themselves are not modelled:
+     * they raise an illegal instruction exception whatever the state is. */
+    uint32_t hwlp_state;   /* 0x7f1 */
+    uint32_t pie_state;    /* 0x7f2 */
+
     /* Reason for the last illegal instruction exception on cores with
      * coprocessors (0x7f0).  Latched when the exception is taken. */
     uint32_t ext_ill;
