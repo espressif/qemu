@@ -390,7 +390,7 @@ static void esp32c6_machine_init(MachineState *machine)
     {
         sysbus_realize(SYS_BUS_DEVICE(&ms->efuse), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->efuse), 0);
-        memory_region_add_subregion_overlap(sys_mem, DR_REG_EFUSE_BASE, mr, 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_EFUSE_BASE, mr, 1);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->efuse), 0,
                            qdev_get_gpio_in(intmatrix_dev, C6_ETS_EFUSE_INTR_SOURCE));
     }
