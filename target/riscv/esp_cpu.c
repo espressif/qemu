@@ -100,6 +100,10 @@
 #define ESP_CPU_CSR_DSP_SAR       0x809
 #define ESP_CPU_CSR_DSP_STATUS    0x80a
 
+/* Illegal instruction reason, see EXT_ILL_CSR in IDF riscv/vectors.S. */
+#define ESP_CPU_CSR_EXT_ILL       0x7f0
+#define ESP_CPU_EXT_ILL_RSN_FPU   BIT(0)
+
 
 static RISCVException esp_cpu_csr_predicate(CPURISCVState *env, int csrno) {
     return RISCV_EXCP_NONE;
@@ -236,6 +240,8 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = s->dsp_sar;
     } else if (csrno == ESP_CPU_CSR_DSP_STATUS) {
         *ret_value = s->dsp_status;
+    } else if (csrno == ESP_CPU_CSR_EXT_ILL) {
+        *ret_value = s->ext_ill;
     } else {
         *ret_value = 0;
     }
@@ -297,6 +303,8 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
         s->dsp_sar = (uint32_t)new_value;
     } else if (csrno == ESP_CPU_CSR_DSP_STATUS) {
         s->dsp_status = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_EXT_ILL) {
+        s->ext_ill = (uint32_t)new_value;
     }
 
     return RISCV_EXCP_NONE;
@@ -461,6 +469,29 @@ static void esp_cpu_clic_mret(CPURISCVState *env)
 }
 
 
+static bool esp_cpu_insn_is_fpu(uint32_t insn)
+{
+    if ((insn & 3) != 3) {
+        /* RV32 C.FLW, C.FSW, C.FLWSP and C.FSWSP */
+        const uint32_t funct3 = (insn >> 13) & 7;
+        return (insn & 1) == 0 && (funct3 == 3 || funct3 == 7);
+    }
+
+    switch (insn & 0x7f) {
+    case 0x07: /* LOAD-FP */
+    case 0x27: /* STORE-FP */
+    case 0x43: /* MADD */
+    case 0x47: /* MSUB */
+    case 0x4b: /* NMSUB */
+    case 0x4f: /* NMADD */
+    case 0x53: /* OP-FP */
+        return true;
+    default:
+        return false;
+    }
+}
+
+
 /**
  * Called for synchronous exceptions only, esp_cpu_exec_interrupt handles interrupts.
  * An exception leaves mil unchanged, but mcause.mpil must still record it so that
@@ -471,6 +502,13 @@ static void esp_cpu_do_interrupt(CPUState *cs)
     EspRISCVCPU *cpu = ESP_CPU(cs);
     CPURISCVState *env = &cpu->parent_obj.env;
     const bool semihost = cs->exception_index == RISCV_EXCP_SEMIHOST;
+
+    /* IDF enables the FPU lazily, based on the reason in CSR 0x7f0 */
+    if (cs->exception_index == RISCV_EXCP_ILLEGAL_INST &&
+        get_field(env->mstatus, MSTATUS_FS) == EXT_STATUS_DISABLED &&
+        esp_cpu_insn_is_fpu(env->bins)) {
+        cpu->ext_ill |= ESP_CPU_EXT_ILL_RSN_FPU;
+    }
 
     riscv_cpu_do_interrupt(cs);
 
@@ -635,6 +673,7 @@ static void esp_cpu_reset(void *opaque)
     cpu->dsp_xacc_h = 0;
     cpu->dsp_sar = 0;
     cpu->dsp_status = 0;
+    cpu->ext_ill = 0;
     cpu->utvt = 0;
     cpu->mtvt = 0;
     cpu->mnxti = 0;
@@ -798,6 +837,7 @@ static void esp_cpu_init(Object *obj)
     riscv_set_csr_ops(ESP_CPU_CSR_DSP_XACC_H, &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_DSP_SAR,    &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_DSP_STATUS, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_EXT_ILL,    &esp_cpu_csr_ops);
 
     /* Machine Hardware Configuration CSRs (ESP32-C5 branch predictor, etc.)
      * 0x7C0..0x7CF; backed by `mhcr[16]`. */

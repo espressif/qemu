@@ -163,6 +163,10 @@ typedef struct EspRISCVCPU {
     uint32_t dsp_xacc_h;   /* 0x807 */
     uint32_t dsp_sar;      /* 0x809 */
     uint32_t dsp_status;   /* 0x80a */
+
+    /* Reason for the last illegal instruction exception on cores with
+     * coprocessors (0x7f0).  Latched when the exception is taken. */
+    uint32_t ext_ill;
 } EspRISCVCPU;
 
 /**
