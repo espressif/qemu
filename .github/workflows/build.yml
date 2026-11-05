@@ -120,7 +120,6 @@ jobs:
             mingw-w64-x86_64-glib2
             mingw-w64-x86_64-libgcrypt
             mingw-w64-x86_64-libiconv
-            mingw-w64-x86_64-libslirp
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-pixman
             mingw-w64-x86_64-pkg-config

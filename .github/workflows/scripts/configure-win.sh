@@ -31,4 +31,6 @@ echo DBG
 # - Dynamic import libraries (.dll.a) instead of static libraries (.a)
 # We need to fix both issues in build.ninja for the static build to work correctly.
 MSYS_BASE=$(cygpath -w / | sed 's/\\/\//g')
-sed -i "s|/mingw64/lib/libintl.dll.a|${MSYS_BASE}/mingw64/lib/libintl.a|g; s|/mingw64/lib/libiconv.dll.a|${MSYS_BASE}/mingw64/lib/libiconv.a|g" build/build.ninja
+# The paths also appear in dependency lists of build.ninja, where a colon needs escaping.
+MSYS_BASE=${MSYS_BASE/:/\$:}
+sed -i -E "s|[^ ]*/mingw64/lib/libintl\.dll\.a|${MSYS_BASE}/mingw64/lib/libintl.a|g; s|[^ ]*/mingw64/lib/libiconv\.dll\.a|${MSYS_BASE}/mingw64/lib/libiconv.a|g" build/build.ninja
