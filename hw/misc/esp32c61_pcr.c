@@ -23,7 +23,6 @@
 #define C61_PCR_SYSCLK_CONF_REG     0x0E8
 #define C61_PCR_CPU_FREQ_CONF_REG   0x0F0
 #define C61_PCR_BUS_CLK_UPDATE_REG  0x120
-#define C61_A_SYSCON_RND_DATA_REG   0x0B0
 #define C61_A_SYSCON_ORIGIN_REG     0x3F8
 
 #define C61_PCR_RST_EN              (1 << 1)
@@ -87,15 +86,6 @@ static uint64_t esp32c61_pcr_read(void *opaque, hwaddr addr, unsigned int size)
     ESP32C61PcrState *s = ESP32C61_PCR(opaque);
 
     switch (addr) {
-        case C61_A_SYSCON_RND_DATA_REG:
-            {
-                static bool init;
-                if (!init) {
-                    srand(time(NULL));
-                    init = true;
-                }
-                return rand();
-            }
         case C61_A_SYSCON_ORIGIN_REG:
             return 0x51454d55;
         default:
