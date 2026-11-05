@@ -51,6 +51,7 @@
 #include "hw/timer/esp_systimer.h"
 #include "hw/ssi/esp32p4_spi.h"
 #include "hw/ssi/ssi.h"
+#include "net/net.h"
 
 #define ESP32P4_RESET_ADDRESS       0x4FC00000
 #define ESP32P4_CORE1_RESET_HOLD_NS (100 * SCALE_US)
@@ -306,6 +307,27 @@ static void esp32p4_init_spi_flash(Esp32P4MachineState *ms, BlockBackend *blk)
     qdev_connect_gpio_out_named(spi_master, SSI_GPIO_CS, 0,
                                 qdev_get_gpio_in_named(flash_dev,
                                                        SSI_GPIO_CS, 0));
+}
+
+/* OpenCores Ethernet MAC at the EMAC address, for IDF's QEMU Ethernet driver */
+static void esp32p4_init_openeth(Esp32P4MachineState *ms)
+{
+    MemoryRegion *sys_mem = get_system_memory();
+
+    DeviceState *open_eth_dev = qemu_create_nic_device("open_eth", true, NULL);
+    if (!open_eth_dev) {
+        return;
+    }
+
+    SysBusDevice *sbd = SYS_BUS_DEVICE(open_eth_dev);
+    sysbus_realize(sbd, &error_fatal);
+
+    MemoryRegion *mr = sysbus_mmio_get_region(sbd, 0);
+    memory_region_add_subregion_overlap(sys_mem, DR_REG_EMAC_BASE, mr, 0);
+    mr = sysbus_mmio_get_region(sbd, 1);
+    memory_region_add_subregion_overlap(sys_mem, DR_REG_EMAC_BASE + 0x400, mr, 0);
+
+    sysbus_connect_irq(sbd, 0, esp32p4_intmatrix_in(ms, P4_ETS_ETH_MAC_INTR_SOURCE));
 }
 
 static void esp32p4_write_boot_stub(hwaddr entry, hwaddr reset_addr)
@@ -836,6 +858,8 @@ static void esp32p4_machine_init(MachineState *machine)
                                    P4_ETS_SYSTIMER_TARGET0_INTR_SOURCE + i));
         }
     }
+
+    esp32p4_init_openeth(ms);
 
     create_unimplemented_device("esp32p4.peripherals",
                                 ESP32P4_IO_START_ADDR, 0x100000);

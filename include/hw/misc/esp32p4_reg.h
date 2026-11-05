@@ -44,6 +44,7 @@
 #define DR_REG_SPI2_BASE                        0x500D0000
 #define DR_REG_SPI3_BASE                        0x500D1000
 #define DR_REG_USB_SERIAL_JTAG_BASE             0x500D2000
+#define DR_REG_EMAC_BASE                        0x50098000
 #define DR_REG_INTERRUPT_BASE                   0x500D6000
 #define DR_REG_INTERRUPT_CORE0_BASE             DR_REG_INTERRUPT_BASE
 #define DR_REG_INTERRUPT_CORE1_BASE             0x500D6800
@@ -110,6 +111,7 @@
 #define P4_ETS_AHB_PDMA_OUT_CH1_INTR_SOURCE     60
 #define P4_ETS_AHB_PDMA_OUT_CH2_INTR_SOURCE     61
 #define P4_ETS_SHA_INTR_SOURCE                  70
+#define P4_ETS_ETH_MAC_INTR_SOURCE              92
 #define P4_ETS_GPIO_INTR0_SOURCE                74
 #define P4_ETS_FROM_CPU_INTR0_SOURCE            79
 #define P4_ETS_FROM_CPU_INTR1_SOURCE            80
