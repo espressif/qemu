@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include "hw/dma/esp32c3_gdma.h"
+#include "hw/dma/esp_ahb_gdma.h"
 
 #define TYPE_ESP32H4_GDMA "esp32h4.gdma"
 #define ESP32H4_GDMA(obj)           OBJECT_CHECK(ESP32H4GdmaState, (obj), TYPE_ESP32H4_GDMA)
@@ -19,9 +19,9 @@
 #define ESP32H4_GDMA_CHANNEL_COUNT  5
 
 typedef struct ESP32H4GdmaState {
-    ESP32C3GdmaState parent;
+    ESPAhbGdmaState parent;
 } ESP32H4GdmaState;
 
 typedef struct ESP32H4GdmaClass {
-    ESP32C3GdmaClass parent_class;
+    ESPAhbGdmaClass parent_class;
 } ESP32H4GdmaClass;
