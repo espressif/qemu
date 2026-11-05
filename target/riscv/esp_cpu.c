@@ -85,6 +85,13 @@
  * cores; we keep both names for clarity at the call sites. */
 #define ESP_CPU_CSR_MEXSTATUS     ESP_CPU_CSR_PCMR_M
 
+/* CLIC level fields. All ESP CLIC SOCs have NLBITS = 3: clicintctl[7:5] holds
+ * the level and the bits below it read as 1 when computing the level. */
+#define ESP_CPU_CLIC_LEVEL_PAD    0x1f
+#define ESP_CPU_MINTSTATUS_MIL_S  24
+#define ESP_CPU_MCAUSE_MPIL_S     16
+#define ESP_CPU_MCAUSE_MPIL_LEN   8
+
 /* Espressif DSP extension CSRs (see IDF riscv/csr_dsp.h). */
 #define ESP_CPU_CSR_DSP_STATE     0x7f3
 #define ESP_CPU_CSR_DSP_XACC_L    0x806
@@ -249,7 +256,7 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
     } else if (csrno == ESP_CPU_CSR_MINTSTATUS_A) {
         s->mintstatus_alt = new_value;
     } else if (csrno == ESP_CPU_CSR_MINTTHRESH) {
-        s->mintthresh = new_value;
+        s->mintthresh = new_value & 0xff;
     } else if (csrno == ESP_CPU_CSR_UINTSTATUS) {
         s->uintstatus = new_value;
     } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
@@ -378,8 +385,83 @@ static void esp_cpu_irq_handler(void *opaque, int n, int level)
 }
 
 
+static uint8_t esp_cpu_clic_get_mil(EspRISCVCPU *cpu)
+{
+    return cpu->mintstatus >> ESP_CPU_MINTSTATUS_MIL_S;
+}
+
+
+void esp_cpu_clic_set_line_ctl(EspRISCVCPU *cpu, uint32_t line, uint8_t ctl)
+{
+    assert(line <= ESP_CPU_INT_LINES_MAX);
+    cpu->clic_line_ctl[line] = ctl;
+}
+
+
+/**
+ * Pick the line to take on a CLIC core: the highest level above both mintstatus.mil
+ * and mintthresh, and among equal levels the highest line number.
+ */
+static uint32_t esp_cpu_clic_select_irq_cause(EspRISCVCPU *cpu)
+{
+    const uint8_t threshold = MAX(esp_cpu_clic_get_mil(cpu), cpu->mintthresh);
+    uint32_t cause = 0;
+    uint8_t best_level = 0;
+
+    for (uint32_t i = 1; i <= ESP_CPU_INT_LINES_MAX; i++) {
+        const uint8_t level = cpu->clic_line_ctl[i] | ESP_CPU_CLIC_LEVEL_PAD;
+        if (BIT_SET(cpu->irq_lines, i) && level > threshold && level >= best_level) {
+            cause = i;
+            best_level = level;
+        }
+    }
+
+    return cause;
+}
+
+
+/**
+ * mret on a CLIC core restores the interrupt level saved in mcause.mpil. IDF relies
+ * on this: its handler restores mcause before returning and never lowers mil itself.
+ */
+static void esp_cpu_clic_mret(CPURISCVState *env)
+{
+    EspRISCVCPU *cpu = esp_cpu_riscv_to_cpu(env);
+    const uint32_t mpil = extract32(env->mcause, ESP_CPU_MCAUSE_MPIL_S,
+                                    ESP_CPU_MCAUSE_MPIL_LEN);
+
+    cpu->mintstatus = mpil << ESP_CPU_MINTSTATUS_MIL_S;
+}
+
+
+/**
+ * Called for synchronous exceptions only, esp_cpu_exec_interrupt handles interrupts.
+ * An exception leaves mil unchanged, but mcause.mpil must still record it so that
+ * the mret ending the exception handler restores the same level.
+ */
+static void esp_cpu_do_interrupt(CPUState *cs)
+{
+    EspRISCVCPU *cpu = ESP_CPU(cs);
+    CPURISCVState *env = &cpu->parent_obj.env;
+    const bool semihost = cs->exception_index == RISCV_EXCP_SEMIHOST;
+
+    riscv_cpu_do_interrupt(cs);
+
+    /* A semihosting call returns to the guest without taking a trap */
+    if (cpu->clic_ext_irq && !semihost) {
+        env->mcause = deposit32(env->mcause, ESP_CPU_MCAUSE_MPIL_S,
+                                ESP_CPU_MCAUSE_MPIL_LEN,
+                                esp_cpu_clic_get_mil(cpu));
+    }
+}
+
+
 static uint32_t esp_cpu_select_irq_cause(EspRISCVCPU *cpu)
 {
+    if (cpu->clic_ext_irq) {
+        return esp_cpu_clic_select_irq_cause(cpu);
+    }
+
     for (uint32_t i = 1; i <= ESP_CPU_INT_LINES_MAX; i++) {
         if (BIT_SET(cpu->irq_lines, i)) {
             return i;
@@ -468,6 +550,15 @@ static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 
         env->mcause = RISCV_EXCP_INT_FLAG | cause;
 
+        if (cpu->clic_ext_irq) {
+            const uint8_t level = cpu->clic_line_ctl[cause] | ESP_CPU_CLIC_LEVEL_PAD;
+
+            env->mcause = deposit32(env->mcause, ESP_CPU_MCAUSE_MPIL_S,
+                                    ESP_CPU_MCAUSE_MPIL_LEN,
+                                    esp_cpu_clic_get_mil(cpu));
+            cpu->mintstatus = (uint32_t)level << ESP_CPU_MINTSTATUS_MIL_S;
+        }
+
         /*
          * Vectoring dispatch:
          *  - mtvt non-zero: CLIC table at mtvt + 4*cause holds handler ptr.
@@ -532,6 +623,7 @@ static void esp_cpu_reset(void *opaque)
     cpu->mintthresh = 0;
     cpu->uintstatus = 0;
     cpu->mintstatus = 0;
+    memset(cpu->clic_line_ctl, 0, sizeof(cpu->clic_line_ctl));
     qemu_irq_lower(cpu->parent_irq);
     cpu_reset(CPU(cpu));
 }
@@ -579,6 +671,10 @@ static void esp_cpu_realize(DeviceState *dev, Error **errp)
     if (espcpu->mie_as_bitmap) {
         riscv_set_csr_ops(CSR_MIE, &esp_cpu_mie_csr_ops);
     }
+
+    if (espcpu->clic_ext_irq) {
+        espcpu->parent_obj.env.mret_hook = esp_cpu_clic_mret;
+    }
 }
 
 static struct TCGCPUOps tcg_ops = { 0 };
@@ -610,6 +706,7 @@ static void esp_cpu_override_tcg_interrupts(Object *obj)
 
     /* Replace with our overridden implementations */
     tcg_ops.cpu_exec_interrupt = esp_cpu_exec_interrupt;
+    tcg_ops.do_interrupt = esp_cpu_do_interrupt;
     tcg_ops.cpu_exec_halt = esp_cpu_has_work;
     cc->tcg_ops = &tcg_ops;
 }

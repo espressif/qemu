@@ -231,6 +231,7 @@ static void clic_write(void *opaque, hwaddr addr, uint64_t value,
                 s->irq_enabled &= ~BIT(line);
             }
             s->irq_prio[line] = (cur >> 24) & 0xff;
+            esp_cpu_clic_set_line_ctl(s->cpu, line, s->irq_prio[line]);
 
             update_line(s, line);
         }

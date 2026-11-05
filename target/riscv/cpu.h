@@ -272,6 +272,8 @@ struct CPUArchState {
      * silicon where MPRV and S-mode bits are hardwired 0.
      */
     uint64_t mstatus_warl_mask;
+    /* Called at the end of mret, for interrupt controllers with state it restores */
+    void (*mret_hook)(CPURISCVState *env);
 
     uint64_t mip;
     /*

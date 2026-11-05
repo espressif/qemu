@@ -455,6 +455,7 @@ static void esp32c61_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(ms), "soc", &ms->soc, TYPE_ESP_RISCV_CPU);
     qdev_prop_set_uint64(DEVICE(&ms->soc), "resetvec", ESP32C61_RESET_ADDRESS);
     qdev_prop_set_bit(DEVICE(&ms->soc), "has-pma", true);
+    qdev_prop_set_bit(DEVICE(&ms->soc), "clic-ext-irq", true);
 
     {
         CPURISCVState *env = &ms->soc.parent_obj.env;

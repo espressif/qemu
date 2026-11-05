@@ -498,6 +498,7 @@ static void esp32c5_machine_init(MachineState *machine)
     /* The ESP32-C5 implements the Espressif PMA CSR extension (the BIST
      * CSR test exercises pmaaddr0..11 at 0xBD0..0xBDB). */
     qdev_prop_set_bit(DEVICE(&ms->soc), "has-pma", true);
+    qdev_prop_set_bit(DEVICE(&ms->soc), "clic-ext-irq", true);
 
     /* ESP32-C5 ISA: rv32imac + Zca + Zcb + Zcmp + Zcmt (no F/D) */
     {

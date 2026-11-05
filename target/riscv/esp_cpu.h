@@ -121,12 +121,18 @@ typedef struct EspRISCVCPU {
      * clicintie[] bytes, which the intmatrix already honours, and mie has no
      * MEIE bit at all. The ESP32-P4 mask ROM clears mie before handing control
      * over, so without this the parent RISC-V dispatcher's `mie & mip` check on
-     * IRQ_M_EXT rejects every interrupt the intmatrix raises. */
+     * IRQ_M_EXT rejects every interrupt the intmatrix raises.
+     * Also selects CLIC arbitration: lines are taken by level against
+     * mintstatus.mil and mintthresh, and mret restores mil from mcause.mpil. */
     bool clic_ext_irq;
+    /* clicintctl byte of each line, reported by the intmatrix through
+     * esp_cpu_clic_set_line_ctl(). */
+    uint8_t clic_line_ctl[ESP_CPU_INT_LINES_MAX + 1];
 
     /* CLIC CSRs (CLIC-based ESP CPUs: ESP32-C5, ESP32-P4).  Same rationale
      * as the PMA storage above -- not modelled, but values must round-trip.
-     * `mtvt` is also consumed by esp_cpu_exec_interrupt for CLIC vectoring. */
+     * Exceptions: esp_cpu_exec_interrupt consumes `mtvt` for CLIC vectoring,
+     * and on CLIC cores `mintthresh` and `mintstatus` gate interrupts. */
     target_ulong utvt;            /* 0x007 utvt    */
     target_ulong mtvt;            /* 0x307 mtvt    */
     target_ulong mnxti;           /* 0x345 mnxti   */
@@ -157,6 +163,12 @@ typedef struct EspRISCVCPU {
     uint32_t dsp_sar;      /* 0x809 */
     uint32_t dsp_status;   /* 0x80a */
 } EspRISCVCPU;
+
+/**
+ * @brief Report a line's clicintctl byte to a CLIC core, which needs it to compute
+ * the line's interrupt level.
+ */
+void esp_cpu_clic_set_line_ctl(EspRISCVCPU *cpu, uint32_t line, uint8_t ctl);
 
 /**
  * Register a callback to be invoked after every guest write to the mie CSR.
