@@ -47,7 +47,10 @@
 #define DR_REG_INTERRUPT_CORE1_BASE             DR_REG_INTMTX1_BASE
 #define DR_REG_HP_SYSTEM_BASE                   0x6009C000
 #define DR_REG_SYSTEM_BASE                      DR_REG_HP_SYSTEM_BASE
+#define DR_REG_AES_BASE                         0x600A6000
 #define DR_REG_SHA_BASE                         0x600A7000
+#define DR_REG_ECC_MULT_BASE                    0x600A8000
+#define DR_REG_ECDSA_BASE                       0x600AA000
 
 /* LP / AON */
 #define DR_REG_EFUSE_BASE                       0x600B1800
@@ -98,3 +101,6 @@
 #define H4_ETS_DMA_OUT_CH3_INTR_SOURCE          89
 #define H4_ETS_DMA_OUT_CH4_INTR_SOURCE          90
 #define H4_ETS_SHA_INTR_SOURCE                  94
+#define H4_ETS_AES_INTR_SOURCE                   93
+#define H4_ETS_ECC_INTR_SOURCE                   95
+#define H4_ETS_ECDSA_INTR_SOURCE                 96

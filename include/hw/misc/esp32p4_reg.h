@@ -30,6 +30,8 @@
 #define DR_REG_PSRAM_MSPI1_BASE                 0x5008F000
 #define DR_REG_AES_BASE                         0x50090000
 #define DR_REG_SHA_BASE                         0x50091000
+#define DR_REG_ECC_MULT_BASE                    0x50093000
+#define DR_REG_ECDSA_BASE                       0x50096000
 #define DR_REG_RSA_BASE                         0x50092000
 #define DR_REG_EMAC_BASE                        0x50098000
 
@@ -111,6 +113,9 @@
 #define P4_ETS_AHB_PDMA_OUT_CH1_INTR_SOURCE     60
 #define P4_ETS_AHB_PDMA_OUT_CH2_INTR_SOURCE     61
 #define P4_ETS_SHA_INTR_SOURCE                  70
+#define P4_ETS_RSA_INTR_SOURCE                   68
+#define P4_ETS_ECC_INTR_SOURCE                   71
+#define P4_ETS_ECDSA_INTR_SOURCE                 72
 #define P4_ETS_ETH_MAC_INTR_SOURCE              92
 #define P4_ETS_GPIO_INTR0_SOURCE                74
 #define P4_ETS_FROM_CPU_INTR0_SOURCE            79

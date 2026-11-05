@@ -45,6 +45,8 @@
 #include "hw/riscv/esp32c61_intmatrix.h"
 #include "hw/misc/esp32c61_intpri.h"
 #include "hw/misc/esp32c61_sha.h"
+#include "hw/misc/esp_ecc.h"
+#include "hw/misc/esp_ecdsa.h"
 #include "hw/timer/esp32c61_timg.h"
 #include "hw/timer/esp32c61_systimer.h"
 #include "hw/ssi/esp32c61_spi.h"
@@ -78,6 +80,8 @@ struct Esp32C61MachineState {
     ESP32C61SpiState spi1;
     ESP32C61GdmaState gdma;
     ESP32C61ShaState sha;
+    ESPEccState ecc;
+    ESPEcdsaState ecdsa;
     ESP32C61UsbJtagState jtag;
     ESP32C61PcrState pcr;
     ESP32C61LpState lp;
@@ -534,6 +538,8 @@ static void esp32c61_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "clock", &ms->clock, TYPE_ESP32C61_CLOCK);
     object_initialize_child(OBJECT(machine), "gdma", &ms->gdma, TYPE_ESP32C61_GDMA);
     object_initialize_child(OBJECT(machine), "sha", &ms->sha, TYPE_ESP32C61_SHA);
+    object_initialize_child(OBJECT(machine), "ecc", &ms->ecc, TYPE_ESP32C61_ECC);
+    object_initialize_child(OBJECT(machine), "ecdsa", &ms->ecdsa, TYPE_ESP32C61_ECDSA);
     object_initialize_child(OBJECT(machine), "timg0", &ms->timg[0], TYPE_ESP32C61_TIMG);
     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C61_TIMG);
     for (int i = 0; i < 2; i++) {
@@ -686,6 +692,24 @@ static void esp32c61_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SHA_BASE, mr, 0);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->sha), 0,
                            qdev_get_gpio_in(intmatrix_dev, C61_ETS_SHA_INTR_SOURCE));
+    }
+
+    /* ECC */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ms->ecc), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->ecc), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_ECC_MULT_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->ecc), 0,
+                           qdev_get_gpio_in(intmatrix_dev, C61_ETS_ECC_INTR_SOURCE));
+    }
+
+    /* ECDSA */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ms->ecdsa), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->ecdsa), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_ECDSA_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->ecdsa), 0,
+                           qdev_get_gpio_in(intmatrix_dev, C61_ETS_ECDSA_INTR_SOURCE));
     }
 
     /* MODEM_LPCON */

@@ -24,6 +24,8 @@
 /* Peripheral 1 register base addresses */
 #define DR_REG_GDMA_BASE                        0x60080000
 #define DR_REG_SHA_BASE                         0x60089000
+#define DR_REG_ECC_MULT_BASE                    0x6008B000
+#define DR_REG_ECDSA_BASE                       0x6008E000
 
 /* HP Top peripherals */
 #define DR_REG_IO_MUX_BASE                      0x60090000
@@ -73,5 +75,7 @@
 #define C61_ETS_DMA_OUT_CH1_INTR_SOURCE         61
 #define C61_ETS_SPI2_INTR_SOURCE                62
 #define C61_ETS_SHA_INTR_SOURCE                  63
+#define C61_ETS_ECC_INTR_SOURCE                  64
+#define C61_ETS_ECDSA_INTR_SOURCE                65
 
 #define ESP32C61_INT_MATRIX_INPUTS              66

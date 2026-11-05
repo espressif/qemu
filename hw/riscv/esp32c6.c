@@ -45,6 +45,9 @@
 #include "hw/riscv/esp32c6_intmatrix.h"
 #include "hw/misc/esp32c6_intpri.h"
 #include "hw/misc/esp32c6_sha.h"
+#include "hw/misc/esp32c6_aes.h"
+#include "hw/misc/esp32c6_rsa.h"
+#include "hw/misc/esp_ecc.h"
 #include "hw/timer/esp32c6_timg.h"
 #include "hw/timer/esp32c6_systimer.h"
 #include "hw/ssi/esp32c6_spi.h"
@@ -79,6 +82,9 @@ struct Esp32C6MachineState {
     ESP32C6SpiState spi1;
     ESP32C6GdmaState gdma;
     ESP32C6ShaState sha;
+    ESP32C6AesState aes;
+    ESP32C6RsaState rsa;
+    ESPEccState ecc;
     ESP32C6UsbJtagState jtag;
     ESP32C6PcrState pcr;
     ESP32C6LpState lp;
@@ -308,6 +314,9 @@ static void esp32c6_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "clock", &ms->clock, TYPE_ESP32C6_CLOCK);
     object_initialize_child(OBJECT(machine), "gdma", &ms->gdma, TYPE_ESP32C6_GDMA);
     object_initialize_child(OBJECT(machine), "sha", &ms->sha, TYPE_ESP32C6_SHA);
+    object_initialize_child(OBJECT(machine), "aes", &ms->aes, TYPE_ESP32C6_AES);
+    object_initialize_child(OBJECT(machine), "rsa", &ms->rsa, TYPE_ESP32C6_RSA);
+    object_initialize_child(OBJECT(machine), "ecc", &ms->ecc, TYPE_ESP32C6_ECC);
     object_initialize_child(OBJECT(machine), "timg0", &ms->timg[0], TYPE_ESP32C6_TIMG);
     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C6_TIMG);
     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C6_SYSTIMER);
@@ -452,6 +461,34 @@ static void esp32c6_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SHA_BASE, mr, 0);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->sha), 0,
                            qdev_get_gpio_in(intmatrix_dev, C6_ETS_SHA_INTR_SOURCE));
+    }
+
+    /* AES */
+    {
+        ms->aes.parent.gdma = ESP_GDMA(&ms->gdma);
+        sysbus_realize(SYS_BUS_DEVICE(&ms->aes), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->aes), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_AES_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->aes), 0,
+                           qdev_get_gpio_in(intmatrix_dev, C6_ETS_AES_INTR_SOURCE));
+    }
+
+    /* RSA */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ms->rsa), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->rsa), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_RSA_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->rsa), 0,
+                           qdev_get_gpio_in(intmatrix_dev, C6_ETS_RSA_INTR_SOURCE));
+    }
+
+    /* ECC */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ms->ecc), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->ecc), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_ECC_MULT_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->ecc), 0,
+                           qdev_get_gpio_in(intmatrix_dev, C6_ETS_ECC_INTR_SOURCE));
     }
 
     /* MODEM_LPCON (modem clock control) */
