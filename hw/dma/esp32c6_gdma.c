@@ -14,11 +14,17 @@ static void esp32c6_gdma_init(Object *obj)
 {
 }
 
+static void esp32c6_gdma_class_init(ObjectClass *klass, void *data)
+{
+    ESP_GDMA_CLASS(klass)->ram_addr = 0x40800000;
+}
+
 static const TypeInfo esp32c6_gdma_info = {
     .name = TYPE_ESP32C6_GDMA,
     .parent = TYPE_ESP32C3_GDMA,
     .instance_size = sizeof(ESP32C6GdmaState),
     .instance_init = esp32c6_gdma_init,
+    .class_init = esp32c6_gdma_class_init,
     .class_size = sizeof(ESP32C6GdmaClass),
 };
 
