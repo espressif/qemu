@@ -13,6 +13,9 @@
 
 static void esp32c6_spi_init(Object *obj)
 {
+    ESP32C6SpiState *s = ESP32C6_SPI(obj);
+
+    s->parent.addr_phase_has_wb_mode = true;
 }
 
 static const TypeInfo esp32c6_spi_info = {
