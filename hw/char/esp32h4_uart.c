@@ -11,10 +11,16 @@
 #include "qemu/module.h"
 #include "hw/char/esp32h4_uart.h"
 
+static void esp32h4_uart_class_init(ObjectClass *klass, void *data)
+{
+    ESP32C3_UART_CLASS(klass)->rxd_cnt_reg = ESP32C6_UART_RXD_CNT_REG;
+}
+
 static const TypeInfo esp32h4_uart_info = {
     .name = TYPE_ESP32H4_UART,
     .parent = TYPE_ESP32C3_UART,
     .instance_size = sizeof(ESP32H4UARTState),
+    .class_init = esp32h4_uart_class_init,
     .class_size = sizeof(ESP32H4UARTClass),
 };
 

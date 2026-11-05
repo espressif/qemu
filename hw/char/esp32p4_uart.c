@@ -81,6 +81,7 @@ static void esp32p4_uart_write(void *opaque, hwaddr addr, uint64_t value,
 
 static void esp32p4_uart_class_init(ObjectClass *klass, void *data)
 {
+    ESP32C3_UART_CLASS(klass)->rxd_cnt_reg = ESP32C6_UART_RXD_CNT_REG;
     ESP32P4UARTClass *p4 = ESP32P4_UART_CLASS(klass);
     ESP32UARTClass *esp32 = ESP32_UART_CLASS(klass);
 
