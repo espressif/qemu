@@ -15,7 +15,7 @@
 #include "hw/sysbus.h"
 
 #define ESP32C61_INT_MATRIX_INPUTS   66
-#define ESP32C61_CPU_INT_COUNT       (ESP_CPU_INT_LINES)
+#define ESP32C61_CPU_INT_COUNT       (ESP_CPU_INT_LINES_MAX)
 #define ESP32C61_CLIC_NUM_INT        48
 
 #define ESP32C61_INT_MATRIX_OUTPUT_NAME "misc.esp32c61.intmatrix.out_irqs"

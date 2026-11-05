@@ -88,6 +88,7 @@
 /* CLIC level fields. All ESP CLIC SOCs have NLBITS = 3: clicintctl[7:5] holds
  * the level and the bits below it read as 1 when computing the level. */
 #define ESP_CPU_CLIC_LEVEL_PAD    0x1f
+#define ESP_CPU_CLIC_ATTR_SHV     BIT(0)
 #define ESP_CPU_MINTSTATUS_MIL_S  24
 #define ESP_CPU_MCAUSE_MPIL_S     16
 #define ESP_CPU_MCAUSE_MPIL_LEN   8
@@ -416,9 +417,10 @@ static uint8_t esp_cpu_clic_get_mil(EspRISCVCPU *cpu)
 }
 
 
-void esp_cpu_clic_set_line_ctl(EspRISCVCPU *cpu, uint32_t line, uint8_t ctl)
+void esp_cpu_clic_set_line(EspRISCVCPU *cpu, uint32_t line, uint8_t attr, uint8_t ctl)
 {
     assert(line <= ESP_CPU_INT_LINES_MAX);
+    cpu->clic_line_attr[line] = attr;
     cpu->clic_line_ctl[line] = ctl;
 }
 
@@ -584,31 +586,23 @@ static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
             cpu->mintstatus = (uint32_t)level << ESP_CPU_MINTSTATUS_MIL_S;
         }
 
-        /*
-         * Vectoring dispatch:
-         *  - mtvt non-zero: CLIC table at mtvt + 4*cause holds handler ptr.
-         *  - mtvt zero, mode 3 (CLIC): base from mtvec[31:6], PC = base + 4*cause.
-         *  - mtvt zero, mode 1 (vectored): base from mtvec[31:2], PC = base + 4*cause.
-         *  - mtvt zero, mode 0 (direct): PC = base.
-         */
-        target_ulong mtvt = cpu->mtvt;
-        if (mtvt) {
-            uint32_t handler = 0;
-            cpu_memory_rw_debug(cs, mtvt + 4 * cause,
-                                (uint8_t *)&handler, 4, false);
-            env->pc = le32_to_cpu(handler);
+        if (cpu->clic_ext_irq) {
+            /*
+             * A line with clicintattr.shv set takes its handler address from the
+             * table at mtvt. Any other line jumps to the base in mtvec[31:6], the
+             * same entry as exceptions, whatever mtvec's mode field holds.
+             */
+            if (cpu->clic_line_attr[cause] & ESP_CPU_CLIC_ATTR_SHV) {
+                uint32_t handler = 0;
+                cpu_memory_rw_debug(cs, cpu->mtvt + 4 * cause,
+                                    (uint8_t *)&handler, 4, false);
+                env->pc = le32_to_cpu(handler);
+            } else {
+                env->pc = (env->mtvec >> 6) << 6;
+            }
         } else {
-            target_ulong base;
-            if (mode == 3) {
-                base = (env->mtvec >> 6) << 6;
-            } else {
-                base = env->mtvec >> 2 << 2;
-            }
-            if (mode >= 1) {
-                env->pc = base + 4 * cause;
-            } else {
-                env->pc = base;
-            }
+            target_ulong base = env->mtvec >> 2 << 2;
+            env->pc = base + (mode == 1 ? 4 * cause : 0);
         }
     }
 
@@ -648,6 +642,7 @@ static void esp_cpu_reset(void *opaque)
     cpu->mintthresh = 0;
     cpu->uintstatus = 0;
     cpu->mintstatus = 0;
+    memset(cpu->clic_line_attr, 0, sizeof(cpu->clic_line_attr));
     memset(cpu->clic_line_ctl, 0, sizeof(cpu->clic_line_ctl));
     cpu->cc_machine.cycles = 0;
     cpu->cc_machine.former_time = 0;

@@ -125,8 +125,9 @@ typedef struct EspRISCVCPU {
      * Also selects CLIC arbitration: lines are taken by level against
      * mintstatus.mil and mintthresh, and mret restores mil from mcause.mpil. */
     bool clic_ext_irq;
-    /* clicintctl byte of each line, reported by the intmatrix through
-     * esp_cpu_clic_set_line_ctl(). */
+    /* clicintattr and clicintctl bytes of each line, reported by the intmatrix
+     * through esp_cpu_clic_set_line(). */
+    uint8_t clic_line_attr[ESP_CPU_INT_LINES_MAX + 1];
     uint8_t clic_line_ctl[ESP_CPU_INT_LINES_MAX + 1];
 
     /* CLIC CSRs (CLIC-based ESP CPUs: ESP32-C5, ESP32-P4).  Same rationale
@@ -170,10 +171,10 @@ typedef struct EspRISCVCPU {
 void esp_cpu_set_freq(EspRISCVCPU *cpu, uint32_t freq_hz);
 
 /**
- * @brief Report a line's clicintctl byte to a CLIC core, which needs it to compute
- * the line's interrupt level.
+ * @brief Report a line's clicintattr and clicintctl bytes to a CLIC core, which needs
+ * them to select the line's handler and compute its interrupt level.
  */
-void esp_cpu_clic_set_line_ctl(EspRISCVCPU *cpu, uint32_t line, uint8_t ctl);
+void esp_cpu_clic_set_line(EspRISCVCPU *cpu, uint32_t line, uint8_t attr, uint8_t ctl);
 
 /**
  * Register a callback to be invoked after every guest write to the mie CSR.

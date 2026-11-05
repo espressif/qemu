@@ -158,7 +158,8 @@ static uint64_t clic_read(void *opaque, hwaddr addr, unsigned int size)
                     val |= 1;
                 }
             }
-            return val;
+            /* The model only sees the addressed bytes, not an aligned word */
+            return val >> ((addr & 3) * 8);
         }
     }
     return 0;
@@ -198,7 +199,7 @@ static void clic_write(void *opaque, hwaddr addr, uint64_t value,
                 s->irq_enabled &= ~BIT(line);
             }
             s->irq_prio[line] = (cur >> 24) & 0xff;
-            esp_cpu_clic_set_line_ctl(s->cpu, line, s->irq_prio[line]);
+            esp_cpu_clic_set_line(s->cpu, line, (cur >> 16) & 0xff, s->irq_prio[line]);
 
             update_line(s, line);
         }
