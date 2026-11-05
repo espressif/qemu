@@ -165,6 +165,11 @@ typedef struct EspRISCVCPU {
 } EspRISCVCPU;
 
 /**
+ * @brief Set the rate of the CPU cycle counters, for SOCs that model CPU frequency changes.
+ */
+void esp_cpu_set_freq(EspRISCVCPU *cpu, uint32_t freq_hz);
+
+/**
  * @brief Report a line's clicintctl byte to a CLIC core, which needs it to compute
  * the line's interrupt level.
  */

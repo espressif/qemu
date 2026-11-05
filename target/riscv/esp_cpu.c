@@ -105,7 +105,7 @@ static RISCVException esp_cpu_csr_predicate(CPURISCVState *env, int csrno) {
 }
 
 
-static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter* cc)
+static uint64_t esp_cpu_update_cycles(ESPCPUCycleCounter *cc)
 {
     /* Let's simulate the cycle count between two reads of MCYCLE thanks to the time API. */
     /* Calculate the time elapsed between now and the previous call */
@@ -127,6 +127,25 @@ static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter* cc)
     }
     cc->former_time = now;
     cc->cycles += diff;
+
+    return cc->cycles;
+}
+
+
+void esp_cpu_set_freq(EspRISCVCPU *cpu, uint32_t freq_hz)
+{
+    /* The time elapsed so far was spent at the previous frequency */
+    esp_cpu_update_cycles(&cpu->cc_machine);
+    esp_cpu_update_cycles(&cpu->cc_user);
+    cpu->cc_machine.divider = 1000000000000ULL / freq_hz;
+    cpu->cc_user.divider = cpu->cc_machine.divider;
+}
+
+
+static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter *cc)
+{
+    const uint64_t cycles = esp_cpu_update_cycles(cc);
+    const uint64_t now = cc->former_time;
 
     /*
      * Tight spin loops that poll mcycle (e.g. ets_delay_us) can hold the CPU
@@ -150,7 +169,7 @@ static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter* cc)
         }
     }
 
-    return cc->cycles;
+    return cycles;
 }
 
 
@@ -174,9 +193,9 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = esp_cpu_get_cycles(&s->cc_user);
     } else if (csrno == ESP_CPU_CSR_MCYCLE_M) {
         *ret_value = esp_cpu_get_cycles(&s->cc_machine);
-    } else if (csrno == CSR_MCYCLE) {
+    } else if (csrno == CSR_MCYCLE || csrno == CSR_CYCLE) {
         *ret_value = (target_ulong)esp_cpu_get_cycles(&s->cc_machine);
-    } else if (csrno == CSR_MCYCLEH) {
+    } else if (csrno == CSR_MCYCLEH || csrno == CSR_CYCLEH) {
         *ret_value = (target_ulong)(esp_cpu_get_cycles(&s->cc_machine) >> 32);
     } else if (csrno >= ESP_CPU_CSR_TSELECT && csrno <= ESP_CPU_CSR_TCONTROL) {
         /* Nothing special to do here */
@@ -230,6 +249,12 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
         s->cc_user.cycles = new_value;
     } else if (csrno == ESP_CPU_CSR_MCYCLE_M) {
         s->cc_machine.cycles = new_value;
+    } else if (csrno == CSR_MCYCLE) {
+        esp_cpu_update_cycles(&s->cc_machine);
+        s->cc_machine.cycles = deposit64(s->cc_machine.cycles, 0, 32, new_value);
+    } else if (csrno == CSR_MCYCLEH) {
+        esp_cpu_update_cycles(&s->cc_machine);
+        s->cc_machine.cycles = deposit64(s->cc_machine.cycles, 32, 32, new_value);
     } else if (csrno >= ESP_CPU_CSR_TSELECT && csrno <= ESP_CPU_CSR_TCONTROL) {
         /* Nothing special to do here */
     } else if (csrno >= ESP_CPU_CSR_PMACFG0 && csrno <= ESP_CPU_CSR_PMACFG15) {
@@ -624,6 +649,12 @@ static void esp_cpu_reset(void *opaque)
     cpu->uintstatus = 0;
     cpu->mintstatus = 0;
     memset(cpu->clic_line_ctl, 0, sizeof(cpu->clic_line_ctl));
+    cpu->cc_machine.cycles = 0;
+    cpu->cc_machine.former_time = 0;
+    cpu->cc_machine.former_rem_cycles = 0;
+    cpu->cc_user.cycles = 0;
+    cpu->cc_user.former_time = 0;
+    cpu->cc_user.former_rem_cycles = 0;
     qemu_irq_lower(cpu->parent_irq);
     cpu_reset(CPU(cpu));
 }
@@ -794,9 +825,13 @@ static void esp_cpu_init(Object *obj)
      * the target CPU frequency.  Route through esp_cpu_get_cycles so that
      * ROM functions like ets_delay_us see a cycle rate that matches the
      * configured clock (e.g. 96 MHz for ESP32-H2).
+     * The cycle/cycleh aliases return the host TSC by default. IDF reads them
+     * on SOCs without the 0x7E2 performance counter.
      */
     riscv_set_csr_ops(CSR_MCYCLE, &esp_cpu_csr_ops);
     riscv_set_csr_ops(CSR_MCYCLEH, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(CSR_CYCLE, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(CSR_CYCLEH, &esp_cpu_csr_ops);
 
     s->cc_machine = (ESPCPUCycleCounter) {
         .divider = 6250,   /* 6.25ns per instruction at 160MHz. */
