@@ -50,6 +50,8 @@ typedef struct ESPEccLayout {
     uint8_t result_shift;
     uint8_t param_count;
     uint8_t mem_stride;
+    /* With k = 0, ESP32-C61 boards leave PX and PY as they are; other chips return zeros */
+    bool mul_zero_keeps_point;
     uint32_t date;
 } ESPEccLayout;
 

@@ -85,8 +85,9 @@ static void esp_ecc_point_mul(ESPEccState *s, gcry_ctx_t ctx, gcry_mpi_point_t p
     gcry_mpi_t y = gcry_mpi_new(0);
 
     gcry_mpi_ec_mul(result, k, point, ctx);
-    /* The point at infinity has no affine form */
-    if (gcry_mpi_ec_get_affine(x, y, result, ctx) == 0) {
+    if (ESP_ECC_GET_CLASS(s)->layout->mul_zero_keeps_point && gcry_mpi_cmp_ui(k, 0) == 0) {
+        /* PX and PY keep their values */
+    } else if (gcry_mpi_ec_get_affine(x, y, result, ctx) == 0) { /* The point at infinity has no affine form */
         esp_ecc_mpi_to_le(x, s->mem[PARAM_PX], len);
         esp_ecc_mpi_to_le(y, s->mem[PARAM_PY], len);
     } else {
@@ -270,6 +271,7 @@ static const ESPEccLayout esp32c61_ecc_layout = {
     .result_shift = 29,
     .param_count = 6,
     .mem_stride = 0x20,
+    .mul_zero_keeps_point = true,
     .date = 0x2401060,
 };
 
