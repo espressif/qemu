@@ -71,24 +71,6 @@
 #define ESP32P4_ETS_ROM_LAYOUT_PTR  0x4FC1FFFC
 #define ESP32P4_ETS_ROM_LAYOUT      0x4FC1DB38
 
-/*
- * ets_delay_us (0x4FC0003C per esp32p4.rom.eco5.ld) is only a `j` trampoline
- * into the real body at 0x4FC012F8:
- *
- *   csrr a4, mcycle
- *   lui  a5, 0x4ffc0
- *   lw   a5, -112(a5)      <- s_ticks_per_us, patched below
- *   mul  a0, a0, a5
- *   csrr a5, mcycle / sub / bltu   <- spin
- *
- * Replacing the load with an immediate keeps the spin loop intact while making
- * the delay independent of PLL calibration. Patching the trampoline instead
- * would turn ets_delay_us into a no-op (and clobber the neighbouring
- * ets_get_cpu_frequency entry), so any guest busy-wait would consume no
- * virtual time at all.
- */
-#define ESP32P4_ETS_DELAY_US_TICKS  0x4FC01300
-
 struct Esp32P4MachineState {
     MachineState parent;
 
@@ -156,6 +138,32 @@ static void esp32p4_reset_request(void *opaque, int n, int level)
 {
     if (level) {
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+/* CPU clock: HP root clock source selected in LP_CLKRST, divided in HP_SYS_CLKRST */
+static void esp32p4_cpu_clk_changed(void *opaque)
+{
+    Esp32P4MachineState *ms = ESP32P4_MACHINE(opaque);
+    uint32_t root_hz = ESP32P4_XTAL_FREQ_HZ;
+
+    switch (extract32(ms->lp.hp_clk_ctrl, 0, 2)) {
+    case 1:
+        root_hz = esp32p4_lp_cpll_freq_hz(&ms->lp, ESP32P4_XTAL_FREQ_HZ);
+        break;
+    case 2:
+        root_hz = ESP_RC_FAST_FREQ;
+        break;
+    }
+    if (root_hz == 0) {
+        return;
+    }
+
+    const uint32_t freq_hz =
+        root_hz / esp32p4_hp_sys_clkrst_cpu_div(&ms->hp_sys_clkrst);
+
+    for (unsigned i = 0; i < ms->num_cpus; i++) {
+        esp_cpu_set_freq(&ms->cpu[i], freq_hz);
     }
 }
 
@@ -376,15 +384,6 @@ static void esp32p4_load_firmware(MachineState *machine)
             if (size > 0) {
                 uint8_t *rom_buf = g_malloc(size);
                 if (load_image_size(rom_binary, rom_buf, size) == size) {
-                    const uint32_t delay_patch =
-                        0x0A000793;  /* addi a5, zero, 160 */
-                    const size_t patch_offset =
-                        ESP32P4_ETS_DELAY_US_TICKS - ESP32P4_RESET_ADDRESS;
-                    if (patch_offset + sizeof(delay_patch) <= (size_t)size) {
-                        memcpy(rom_buf + patch_offset, &delay_patch,
-                               sizeof(delay_patch));
-                    }
-
                     rom_add_blob_fixed("esp32p4-rom.bin", rom_buf, size,
                                        ESP32P4_RESET_ADDRESS);
 
@@ -724,6 +723,8 @@ static void esp32p4_machine_init(MachineState *machine)
 
     /* HP_SYS_CLKRST (PCR replacement) — also gates HP core1 */
     {
+        ms->hp_sys_clkrst.clk_changed = esp32p4_cpu_clk_changed;
+        ms->hp_sys_clkrst.clk_changed_opaque = ms;
         sysbus_realize(SYS_BUS_DEVICE(&ms->hp_sys_clkrst), &error_fatal);
         MemoryRegion *mr =
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->hp_sys_clkrst), 0);
@@ -749,6 +750,8 @@ static void esp32p4_machine_init(MachineState *machine)
 
     /* LP domain */
     {
+        ms->lp.clk_changed = esp32p4_cpu_clk_changed;
+        ms->lp.clk_changed_opaque = ms;
         sysbus_realize(SYS_BUS_DEVICE(&ms->lp), &error_fatal);
         MemoryRegion *mr =
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->lp), 0);

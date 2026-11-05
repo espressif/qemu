@@ -28,6 +28,10 @@
 #define ESP32P4_LPPERI_OFFSET 0x10000
 #define ESP32P4_LPPERI_SIZE   0x400
 
+/* Analog blocks on the regi2c bus use slave IDs 0x60..0x6F */
+#define ESP32P4_REGI2C_FIRST_SLAVE 0x60
+#define ESP32P4_REGI2C_SLAVES      16
+
 /* Reset reasons matching IDF soc/reset_reasons.h for ESP32-P4 */
 typedef enum ESP32P4ResetReason {
     ESP32P4_CHIP_POWER_ON        = 0x01,
@@ -62,6 +66,12 @@ typedef struct {
     uint32_t lpperi[ESP32P4_LPPERI_SIZE / 4];
     /* LP_SYSTEM_REG_LP_STORE0..15: retention registers, kept across a reset */
     uint32_t store[16];
+    /* LP_CLKRST_HP_CLK_CTRL: HP_ROOT_CLK_SRC_SEL is in bits [1:0] */
+    uint32_t hp_clk_ctrl;
+    void (*clk_changed)(void *opaque);
+    void *clk_changed_opaque;
+    uint32_t i2c0_ctrl;
+    uint8_t regi2c[ESP32P4_REGI2C_SLAVES][256];
     /* LP_SYSTEM_REG_BOOT_ADDR_HP_CORE1: the ROM's core1 start-up loop spins
      * on this word and jumps to it once core0 makes it non-zero. */
     uint32_t core1_boot_addr;
@@ -69,3 +79,6 @@ typedef struct {
     qemu_irq core1_stall;
     qemu_irq core1_sw_reset;
 } ESP32P4LpState;
+
+/* CPLL frequency from the divider registers, 0 before the guest programs them */
+uint32_t esp32p4_lp_cpll_freq_hz(ESP32P4LpState *s, uint32_t xtal_hz);

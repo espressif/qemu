@@ -26,6 +26,9 @@
 #define LP_CLKRST_HPCORE0_SW_RESET       (1U << 13)
 #define LP_CLKRST_HPCORE1_SW_RESET       (1U << 29)
 
+/* LP_CLKRST_HP_CLK_CTRL (+0x40 within LP_CLKRST) */
+#define LP_CLKRST_HP_CLK_CTRL_REG        0x1040
+
 /* LP_SYSTEM_REG_SYS_CTRL */
 #define LP_SYS_CTRL_REG                  0x0008
 #define LP_SYS_CTRL_SYS_SW_RST           (1U << 1)
@@ -42,6 +45,19 @@
 #define PMU_CPU_SW_STALL_REG       0x5200
 #define PMU_HPCORE1_STALL_CODE_S   16
 #define PMU_STALL_CODE_STALLED     0x86
+
+/*
+ * LP_I2C_ANA_MST_I2C0_CTRL at DR_REG_LPPERIPH_BASE (0x50120000) + 0x4000. An
+ * access is one write of slave[7:0], register[15:8], data[23:16] and write[24];
+ * the data read back is in [23:16]. The analog blocks only store their registers.
+ */
+#define LP_I2C_ANA_MST_I2C0_CTRL_REG     0x14000
+#define LP_I2C_ANA_MST_WRITE             (1U << 24)
+
+#define REGI2C_CPLL_SLAVE                0x67
+#define REGI2C_CPLL_REF_DIV_REG          2
+#define REGI2C_CPLL_REF_DIV_MASK         0xf
+#define REGI2C_CPLL_DIV_7_0_REG          3
 
 /* LP_TRNG at DR_REG_LP_TRNG_BASE (0x50126000) → relative 0x16000 */
 #define LP_TRNG_DATA_REG           0x16000
@@ -76,6 +92,33 @@ static void esp32p4_lp_reset_request(void *opaque, int n, int level)
     }
 }
 
+uint32_t esp32p4_lp_cpll_freq_hz(ESP32P4LpState *s, uint32_t xtal_hz)
+{
+    const uint8_t *cpll = s->regi2c[REGI2C_CPLL_SLAVE - ESP32P4_REGI2C_FIRST_SLAVE];
+    const uint32_t ref_div = cpll[REGI2C_CPLL_REF_DIV_REG] & REGI2C_CPLL_REF_DIV_MASK;
+
+    return xtal_hz * cpll[REGI2C_CPLL_DIV_7_0_REG] / (ref_div + 1);
+}
+
+static void esp32p4_lp_regi2c_access(ESP32P4LpState *s, uint32_t value)
+{
+    const uint32_t slave = extract32(value, 0, 8);
+    const uint32_t reg = extract32(value, 8, 8);
+    uint32_t data = extract32(value, 16, 8);
+
+    if (slave >= ESP32P4_REGI2C_FIRST_SLAVE &&
+        slave < ESP32P4_REGI2C_FIRST_SLAVE + ESP32P4_REGI2C_SLAVES) {
+        uint8_t *byte = &s->regi2c[slave - ESP32P4_REGI2C_FIRST_SLAVE][reg];
+
+        if (value & LP_I2C_ANA_MST_WRITE) {
+            *byte = data;
+        } else {
+            data = *byte;
+        }
+    }
+    s->i2c0_ctrl = deposit32(value, 16, 8, data) & ~LP_I2C_ANA_MST_WRITE;
+}
+
 static uint64_t esp32p4_lp_read(void *opaque, hwaddr addr, unsigned int size)
 {
     ESP32P4LpState *s = ESP32P4_LP(opaque);
@@ -95,6 +138,14 @@ static uint64_t esp32p4_lp_read(void *opaque, hwaddr addr, unsigned int size)
 
     if (addr >= LP_SYS_STORE0_REG && addr <= LP_SYS_STORE15_REG) {
         return s->store[(addr - LP_SYS_STORE0_REG) / 4];
+    }
+
+    if (addr == LP_CLKRST_HP_CLK_CTRL_REG) {
+        return s->hp_clk_ctrl;
+    }
+
+    if (addr == LP_I2C_ANA_MST_I2C0_CTRL_REG) {
+        return s->i2c0_ctrl;
     }
 
     if (addr == LP_SYS_BOOT_ADDR_HP_CORE1_REG) {
@@ -132,6 +183,19 @@ static void esp32p4_lp_write(void *opaque, hwaddr addr, uint64_t value,
 
     if (addr >= LP_SYS_STORE0_REG && addr <= LP_SYS_STORE15_REG) {
         s->store[(addr - LP_SYS_STORE0_REG) / 4] = (uint32_t)value;
+        return;
+    }
+
+    if (addr == LP_CLKRST_HP_CLK_CTRL_REG) {
+        s->hp_clk_ctrl = (uint32_t)value;
+        if (s->clk_changed) {
+            s->clk_changed(s->clk_changed_opaque);
+        }
+        return;
+    }
+
+    if (addr == LP_I2C_ANA_MST_I2C0_CTRL_REG) {
+        esp32p4_lp_regi2c_access(s, value);
         return;
     }
 
@@ -189,6 +253,12 @@ static void esp32p4_lp_reset_hold(Object *obj, ResetType type)
 
     s->core1_boot_addr = 0;
     s->cpu_sw_stall = 0;
+    s->hp_clk_ctrl = 0;
+    s->i2c0_ctrl = 0;
+    memset(s->regi2c, 0, sizeof(s->regi2c));
+    if (s->clk_changed) {
+        s->clk_changed(s->clk_changed_opaque);
+    }
 
     qemu_irq_lower(s->cpu_reset);
     qemu_irq_lower(s->core1_stall);

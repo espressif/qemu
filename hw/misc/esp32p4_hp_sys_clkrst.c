@@ -13,6 +13,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/module.h"
+#include "qemu/bitops.h"
 #include "hw/irq.h"
 #include "hw/sysbus.h"
 #include "hw/misc/esp32p4_hp_sys_clkrst.h"
@@ -46,6 +47,11 @@ static const struct {
      * until core0 releases it. */
     { P4_HP_RST_EN0_REG,    P4_RST_EN_CORE1_GLOBAL },
 };
+
+uint32_t esp32p4_hp_sys_clkrst_cpu_div(ESP32P4HpSysClkrstState *s)
+{
+    return extract32(s->reg[P4_ROOT_CLK_CTRL0_REG / 4], 5, 8) + 1;
+}
 
 static bool esp32p4_core1_released(ESP32P4HpSysClkrstState *s)
 {
@@ -91,6 +97,9 @@ static void esp32p4_hp_sys_clkrst_write(void *opaque, hwaddr addr,
         if (addr == P4_ROOT_CLK_CTRL0_REG) {
             /* SOC_CLK_DIV_UPDATE auto-clears after the update is applied */
             s->reg[addr / 4] &= ~P4_SOC_CLK_DIV_UPDATE;
+            if (s->clk_changed) {
+                s->clk_changed(s->clk_changed_opaque);
+            }
         }
 
         if (addr == P4_SOC_CLK_CTRL0_REG || addr == P4_HP_RST_EN0_REG) {
@@ -110,6 +119,9 @@ static void esp32p4_hp_sys_clkrst_reset_hold(Object *obj, ResetType type)
     }
 
     qemu_set_irq(s->core1_run, esp32p4_core1_released(s) ? 1 : 0);
+    if (s->clk_changed) {
+        s->clk_changed(s->clk_changed_opaque);
+    }
 }
 
 static const MemoryRegionOps esp32p4_hp_sys_clkrst_ops = {

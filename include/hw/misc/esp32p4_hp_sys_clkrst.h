@@ -28,4 +28,9 @@ typedef struct {
     MemoryRegion iomem;
     uint32_t reg[ESP32P4_HP_SYS_CLKRST_IO_SIZE / 4];
     qemu_irq core1_run;
+    void (*clk_changed)(void *opaque);
+    void *clk_changed_opaque;
 } ESP32P4HpSysClkrstState;
+
+/* Divider between the HP root clock and the CPU clock */
+uint32_t esp32p4_hp_sys_clkrst_cpu_div(ESP32P4HpSysClkrstState *s);
