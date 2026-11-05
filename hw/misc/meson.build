@@ -316,6 +316,8 @@ if gcrypt.found()
     'esp_ecdsa.c',
   ))
   system_ss.add(when: [gcrypt, 'CONFIG_RISCV_ESP32P4'], if_true: files(
+    'esp_aes.c',
+    'esp32c6_aes.c',
     'esp_rsa.c',
     'esp32c6_rsa.c',
     'esp_ecc.c',

@@ -114,6 +114,7 @@
 #define P4_ETS_AHB_PDMA_OUT_CH2_INTR_SOURCE     61
 #define P4_ETS_SHA_INTR_SOURCE                  70
 #define P4_ETS_RSA_INTR_SOURCE                   68
+#define P4_ETS_AES_INTR_SOURCE                   69
 #define P4_ETS_ECC_INTR_SOURCE                   71
 #define P4_ETS_ECDSA_INTR_SOURCE                 72
 #define P4_ETS_ETH_MAC_INTR_SOURCE              92

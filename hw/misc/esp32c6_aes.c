@@ -10,16 +10,25 @@
 #include "qemu/osdep.h"
 #include "hw/misc/esp32c6_aes.h"
 
-static const TypeInfo esp32c6_aes_info = {
-    .name = TYPE_ESP32C6_AES,
-    .parent = TYPE_ESP_AES,
-    .instance_size = sizeof(ESP32C6AesState),
-    .class_size = sizeof(ESP32C6AesClass),
-};
-
-static void esp32c6_aes_register_types(void)
+static void esp32p4_aes_class_init(ObjectClass *klass, void *data)
 {
-    type_register_static(&esp32c6_aes_info);
+    ESP_AES_CLASS(klass)->no_gdma = true;
 }
 
-type_init(esp32c6_aes_register_types)
+static const TypeInfo esp32c6_aes_types[] = {
+    {
+        .name = TYPE_ESP32C6_AES,
+        .parent = TYPE_ESP_AES,
+        .instance_size = sizeof(ESP32C6AesState),
+        .class_size = sizeof(ESP32C6AesClass),
+    },
+    {
+        .name = TYPE_ESP32P4_AES,
+        .parent = TYPE_ESP_AES,
+        .instance_size = sizeof(ESP32C6AesState),
+        .class_init = esp32p4_aes_class_init,
+        .class_size = sizeof(ESP32C6AesClass),
+    },
+};
+
+DEFINE_TYPES(esp32c6_aes_types)

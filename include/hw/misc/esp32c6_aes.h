@@ -16,6 +16,7 @@
 #include "hw/misc/esp_aes.h"
 
 #define TYPE_ESP32C6_AES "misc.esp32c6.aes"
+#define TYPE_ESP32P4_AES "misc.esp32p4.aes"
 
 typedef struct ESP32C6AesState {
     ESPAesState parent;

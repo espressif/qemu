@@ -77,6 +77,8 @@ typedef struct ESPAesState {
 
 typedef struct ESPAesClass {
     SysBusDeviceClass parent_class;
+    /* The machine does not model this chip's DMA, so only block mode works */
+    bool no_gdma;
     /* Virtual methods*/
     void (*aes_block_start)(ESPAesState *s, const uint32_t *key, const uint32_t *text_in, uint32_t *text_out, const uint32_t mode_reg);
 } ESPAesClass;

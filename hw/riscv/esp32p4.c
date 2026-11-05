@@ -40,6 +40,7 @@
 #include "hw/misc/esp32p4_hp_system.h"
 #include "hw/misc/esp32p4_lp.h"
 #include "hw/misc/esp32p4_sha.h"
+#include "hw/misc/esp32c6_aes.h"
 #include "hw/misc/esp32c6_rsa.h"
 #include "hw/misc/esp_ecc.h"
 #include "hw/misc/esp_ecdsa.h"
@@ -111,6 +112,7 @@ struct Esp32P4MachineState {
     ESP32P4HpSystemState hp_system;
     ESP32P4LpState lp;
     ESP32P4ShaState sha;
+    ESP32C6AesState aes;
     ESP32C6RsaState rsa;
     ESPEccState ecc;
     ESPEcdsaState ecdsa;
@@ -631,6 +633,7 @@ static void esp32p4_machine_init(MachineState *machine)
                             &ms->hp_system, TYPE_ESP32P4_HP_SYSTEM);
     object_initialize_child(OBJECT(machine), "lp", &ms->lp, TYPE_ESP32P4_LP);
     object_initialize_child(OBJECT(machine), "sha", &ms->sha, TYPE_ESP32P4_SHA);
+    object_initialize_child(OBJECT(machine), "aes", &ms->aes, TYPE_ESP32P4_AES);
     object_initialize_child(OBJECT(machine), "rsa", &ms->rsa, TYPE_ESP32P4_RSA);
     object_initialize_child(OBJECT(machine), "ecc", &ms->ecc, TYPE_ESP32P4_ECC);
     object_initialize_child(OBJECT(machine), "ecdsa", &ms->ecdsa, TYPE_ESP32P4_ECDSA);
@@ -814,6 +817,15 @@ static void esp32p4_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SHA_BASE, mr, 0);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->sha), 0,
                            esp32p4_intmatrix_in(ms, P4_ETS_SHA_INTR_SOURCE));
+    }
+
+    /* AES: block mode only, because the machine has no AXI DMA */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ms->aes), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->aes), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_AES_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->aes), 0,
+                           esp32p4_intmatrix_in(ms, P4_ETS_AES_INTR_SOURCE));
     }
 
     /* RSA */

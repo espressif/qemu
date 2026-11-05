@@ -135,9 +135,7 @@ static void esp_aes_dma_start(ESPAesState *s)
         goto close_exit;
     }
 
-    /* Get the GDMA input channel index for AES peripheral */
-    assert(s->gdma != NULL);
-
+    /* Get the GDMA input channel index for AES peripheral. This fails if the machine has no GDMA. */
     if ( !esp_gdma_get_channel_periph(s->gdma, GDMA_AES, ESP_GDMA_OUT_IDX, &gdma_out_idx) ||
          !esp_gdma_get_channel_periph(s->gdma, GDMA_AES, ESP_GDMA_IN_IDX, &gdma_in_idx) ) {
         warn_report("[AES] GDMA requested but no properly configured channel found");
@@ -427,9 +425,10 @@ static void esp_aes_reset_hold(Object *obj, ResetType type)
 static void esp_aes_realize(DeviceState *dev, Error **errp)
 {
     ESPAesState *s = ESP_AES(dev);
+    ESPAesClass *class = ESP_AES_GET_CLASS(dev);
 
     /* Make sure GDMA was set of issue an error */
-    if (s->gdma == NULL) {
+    if (s->gdma == NULL && !class->no_gdma) {
         error_report("[AES] GDMA controller must be set!");
     }
 }
