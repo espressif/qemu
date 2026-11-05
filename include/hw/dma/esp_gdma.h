@@ -138,6 +138,11 @@ typedef struct ESPGdmaClass {
      *        If NULL, all the peripherals are considered valid.
      */
     bool (*is_periph_invalid)(ESPGdmaState *s, GdmaPeripheral per);
+    /**
+     * @brief Returns the PERI_SEL value of the given peripheral on this chip.
+     *        If NULL, it is the value of the GdmaPeripheral enumeration.
+     */
+    uint32_t (*periph_sel)(GdmaPeripheral per);
 } ESPGdmaClass;
 
 

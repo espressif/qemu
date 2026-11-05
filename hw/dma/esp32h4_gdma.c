@@ -31,9 +31,16 @@ static const ESPAhbGdmaLayout esp32h4_gdma_layout = {
     .chan_reg_count = ARRAY_SIZE(esp32h4_gdma_chan_regs),
 };
 
+/* SOC_GDMA_TRIG_PERIPH_AES0 is 4 on this chip. SHA, the only other user of the lookup, has the usual value. */
+static uint32_t esp32h4_gdma_periph_sel(GdmaPeripheral per)
+{
+    return per == GDMA_AES ? 4 : per;
+}
+
 static void esp32h4_gdma_class_init(ObjectClass *klass, void *data)
 {
     ESP_GDMA_CLASS(klass)->m_channel_count = ESP32H4_GDMA_CHANNEL_COUNT;
+    ESP_GDMA_CLASS(klass)->periph_sel = esp32h4_gdma_periph_sel;
     ESP_AHB_GDMA_CLASS(klass)->layout = &esp32h4_gdma_layout;
 }
 
