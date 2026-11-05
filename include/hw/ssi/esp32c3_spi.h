@@ -45,6 +45,12 @@ typedef struct ESP32C3SpiState {
     uint32_t data_reg[ESP32C3_SPI_BUF_WORDS];
     uint32_t mem_sus_st;
     ESP32C3XtsAesState *xts_aes;
+    /*
+     * A 32-bit address phase is a 24-bit address from SPI_MEM_ADDR followed by
+     * the continuous read mode bits from WB_MODE, on chips that have no dummy
+     * output feature. On the others it is a 4-byte address.
+     */
+    bool addr_phase_has_wb_mode;
 } ESP32C3SpiState;
 
 

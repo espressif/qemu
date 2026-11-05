@@ -165,13 +165,16 @@ static void esp32c3_spi_perform_transaction(ESP32C3SpiState *s, ESP32C3SpiTransa
 
 static inline void esp32c3_spi_get_addr(ESP32C3SpiState *s, uint32_t* addr, uint32_t* len)
 {
-    const uint32_t address = FIELD_EX32(s->mem_addr, SPI_MEM_ADDR, USR_ADDR_VALUE);
+    uint32_t address = FIELD_EX32(s->mem_addr, SPI_MEM_ADDR, USR_ADDR_VALUE);
+    const uint32_t address_len = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_ADDR_BITLEN);
+    *len = (address_len + 1) / 8;
+
+    if (s->addr_phase_has_wb_mode && *len == 4) {
+        address = (address << 8) | FIELD_EX32(s->mem_rd_st, SPI_MEM_RD_STATUS, WB_MODE);
+    }
     /* SPI Flash expects the address to be sent with MSB first. We make the assumption that
      * the host computer uses a little-endian CPU. */
     *addr = bswap32(address);
-
-    const uint32_t address_len = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_ADDR_BITLEN);
-    *len = (address_len + 1) / 8;
 }
 
 static inline void esp32c3_spi_get_dummy(ESP32C3SpiState *s, uint32_t* len)

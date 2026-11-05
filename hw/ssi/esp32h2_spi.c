@@ -11,10 +11,18 @@
 #include "qemu/module.h"
 #include "hw/ssi/esp32h2_spi.h"
 
+static void esp32h2_spi_init(Object *obj)
+{
+    ESP32H2SpiState *s = ESP32H2_SPI(obj);
+
+    s->parent.addr_phase_has_wb_mode = true;
+}
+
 static const TypeInfo esp32h2_spi_info = {
     .name = TYPE_ESP32H2_SPI,
     .parent = TYPE_ESP32C3_SPI,
     .instance_size = sizeof(ESP32H2SpiState),
+    .instance_init = esp32h2_spi_init,
 };
 
 static void esp32h2_spi_register_types(void)
