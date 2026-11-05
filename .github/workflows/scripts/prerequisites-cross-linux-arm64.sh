@@ -4,6 +4,10 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND="noninteractive"
 
+# Debian 11 moved to archive.debian.org when its support ended.
+sed -i -e '/bullseye-updates/d' -e 's|deb.debian.org|archive.debian.org|' /etc/apt/sources.list
+echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
+
 dpkg --add-architecture arm64
 
 apt-get update -y -q
