@@ -9,19 +9,19 @@
  */
 #pragma once
 
-#include "hw/dma/esp32c3_gdma.h"
+#include "hw/dma/esp_ahb_gdma.h"
 
 #define TYPE_ESP32C5_GDMA "esp32c5.gdma"
 #define ESP32C5_GDMA(obj)           OBJECT_CHECK(ESP32C5GdmaState, (obj), TYPE_ESP32C5_GDMA)
 #define ESP32C5_GDMA_GET_CLASS(obj) OBJECT_GET_CLASS(ESP32C5GdmaClass, obj, TYPE_ESP32C5_GDMA)
 #define ESP32C5_GDMA_CLASS(klass)   OBJECT_CLASS_CHECK(ESP32C5GdmaClass, klass, TYPE_ESP32C5_GDMA)
 
-#define ESP32C5_GDMA_CHANNEL_COUNT  ESP32C3_GDMA_CHANNEL_COUNT
+#define ESP32C5_GDMA_CHANNEL_COUNT  3
 
 typedef struct ESP32C5GdmaState {
-    ESP32C3GdmaState parent;
+    ESPAhbGdmaState parent;
 } ESP32C5GdmaState;
 
 typedef struct ESP32C5GdmaClass {
-    ESP32C3GdmaClass parent_class;
+    ESPAhbGdmaClass parent_class;
 } ESP32C5GdmaClass;
