@@ -27,4 +27,6 @@ typedef struct ESP32H4PcrState {
     MemoryRegion iomem;
     uint32_t reg[ESP32H4_PCR_IO_SIZE / 4];
     qemu_irq core1_run;
+    void (*cpu_freq_changed)(void *opaque, uint32_t freq_hz);
+    void *cpu_freq_opaque;
 } ESP32H4PcrState;

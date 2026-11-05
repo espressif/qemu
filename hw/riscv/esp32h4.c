@@ -224,6 +224,15 @@ static void esp32h4_core1_sw_reset_request(void *opaque, int n, int level)
     }
 }
 
+static void esp32h4_cpu_freq_changed(void *opaque, uint32_t freq_hz)
+{
+    Esp32H4MachineState *ms = ESP32H4_MACHINE(opaque);
+
+    for (unsigned i = 0; i < ms->num_cpus; i++) {
+        esp_cpu_set_freq(&ms->cpu[i], freq_hz);
+    }
+}
+
 /*
  * A peripheral interrupt line is shared by both cores: each core's matrix maps
  * it independently, so the source has to be delivered to every matrix.
@@ -1018,6 +1027,8 @@ static void esp32h4_machine_init(MachineState *machine)
 
     /* PCR — also gates HP core1 */
     {
+        ms->pcr.cpu_freq_changed = esp32h4_cpu_freq_changed;
+        ms->pcr.cpu_freq_opaque = ms;
         sysbus_realize(SYS_BUS_DEVICE(&ms->pcr), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->pcr), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSCON_BASE, mr, 0);
