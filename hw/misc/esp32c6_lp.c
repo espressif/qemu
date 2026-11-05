@@ -31,6 +31,7 @@ REG32(LP_TIMER_COUNTER_LO, 0x0C14)
 REG32(LP_TIMER_COUNTER_HI, 0x0C18)
 
 /* LP AON sub-block: 0x1000 - 0x10FF */
+REG32(LP_AON_STORE0,         0x1000)
 REG32(LP_AON_STORE4,         0x1010)
 REG32(LP_AON_CPUCORE0_CFG,   0x1038)
     FIELD(LP_AON_CPUCORE0_CFG, CPU_CORE0_SW_RESET, 28, 1)
@@ -65,10 +66,6 @@ static uint64_t esp32c6_lp_read(void *opaque, hwaddr addr, unsigned int size)
     case A_LP_CLKRST_RESET_CAUSE:
         return s->reset_reason;
 
-    case A_LP_AON_STORE4:
-        /* Magic value expected by IDF early-boot code */
-        return 0x00280028;
-
     case A_LP_TIMER_COUNTER_LO:
         return (uint32_t)(s->lp_timer_counter & 0xFFFFFFFF);
 
@@ -76,6 +73,9 @@ static uint64_t esp32c6_lp_read(void *opaque, hwaddr addr, unsigned int size)
         return (uint32_t)((s->lp_timer_counter >> 32) & 0xFFFF);
 
     default:
+        if (addr >= A_LP_AON_STORE0 && addr < A_LP_AON_STORE0 + sizeof(s->aon_store)) {
+            return s->aon_store[(addr - A_LP_AON_STORE0) / 4];
+        }
         /* The RTC I2C block is accessed during early-boot; return all-ones
          * so that polling loops checking for "ready" exit promptly. */
         if (addr >= LP_RTC_I2C_BASE && addr < LP_RTC_I2C_END) {
@@ -105,6 +105,9 @@ static void esp32c6_lp_write(void *opaque, hwaddr addr, uint64_t value,
         break;
 
     default:
+        if (addr >= A_LP_AON_STORE0 && addr < A_LP_AON_STORE0 + sizeof(s->aon_store)) {
+            s->aon_store[(addr - A_LP_AON_STORE0) / 4] = value;
+        }
         break;
     }
 }
@@ -122,6 +125,8 @@ static void esp32c6_lp_reset_hold(Object *obj, ResetType type)
 
     if (first_boot) {
         s->reset_reason = ESP32C6_CHIP_POWER_ON;
+        /* Value expected by IDF early-boot code */
+        s->aon_store[(A_LP_AON_STORE4 - A_LP_AON_STORE0) / 4] = 0x00280028;
         first_boot = false;
     }
 
