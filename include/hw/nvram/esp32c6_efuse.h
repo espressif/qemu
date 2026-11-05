@@ -22,4 +22,5 @@ typedef struct ESP32C6EfuseState {
 
 typedef struct ESP32C6EfuseClass {
     ESP32C3EfuseClass parent_class;
+    DeviceRealize parent_realize;
 } ESP32C6EfuseClass;
