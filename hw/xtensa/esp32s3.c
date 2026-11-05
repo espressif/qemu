@@ -458,8 +458,16 @@ static void esp32s3_soc_realize(DeviceState *dev, Error **errp)
 }
 
 
+/* I2C_MST_ANA_CONF0_REG and its BBPLL_CAL_DONE bit */
+#define ESP32S3_I2C_MST_ANA_CONF0_REG  0x6000E040
+#define ESP32S3_I2C_MST_BBPLL_CAL_DONE BIT(24)
+
 static uint64_t esp32s3_io_read(void *opaque, hwaddr addr, unsigned int size)
 {
+    /* The calibration delay is not modelled, so calibration is always done */
+    if (ESP32S3_IO_START_ADDR + addr == ESP32S3_I2C_MST_ANA_CONF0_REG) {
+        return ESP32S3_I2C_MST_BBPLL_CAL_DONE;
+    }
 #if ESP32S3_IO_WARNING
     warn_report("[ESP32-S3] Unsupported read to $%08lx, size = %i\n", ESP32S3_IO_START_ADDR + addr, size);
 #endif
