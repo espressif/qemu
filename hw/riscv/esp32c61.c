@@ -439,6 +439,11 @@ static void esp32c61_load_firmware(MachineState *machine)
     }
 }
 
+static void esp32c61_cpu_freq_changed(void *opaque, uint32_t freq_hz)
+{
+    esp_cpu_set_freq(opaque, freq_hz);
+}
+
 static void esp32c61_machine_init(MachineState *machine)
 {
     BlockBackend *blk = NULL;
@@ -624,6 +629,8 @@ static void esp32c61_machine_init(MachineState *machine)
 
     /* PCR */
     {
+        ms->pcr.cpu_freq_changed = esp32c61_cpu_freq_changed;
+        ms->pcr.cpu_freq_opaque = &ms->soc;
         sysbus_realize(SYS_BUS_DEVICE(&ms->pcr), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->pcr), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSCON_BASE, mr, 0);
