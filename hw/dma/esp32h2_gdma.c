@@ -17,6 +17,7 @@ static void esp32h2_gdma_init(Object *obj)
 
 static void esp32h2_gdma_class_init(ObjectClass *klass, void *data)
 {
+    ESP_GDMA_CLASS(klass)->ram_addr = 0x40800000;
 }
 
 static const TypeInfo esp32h2_gdma_info = {
