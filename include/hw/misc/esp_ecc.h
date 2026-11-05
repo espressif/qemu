@@ -52,6 +52,8 @@ typedef struct ESPEccLayout {
     uint8_t mem_stride;
     /* With k = 0, ESP32-C61 boards leave PX and PY as they are; other chips return zeros */
     bool mul_zero_keeps_point;
+    /* An ESP32-C6 board returns 2P for k = 1 and -2P for k = the curve order */
+    bool mul_small_k_doubles;
     uint32_t date;
 } ESPEccLayout;
 

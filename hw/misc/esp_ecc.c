@@ -79,13 +79,24 @@ static void esp_ecc_update_irq(ESPEccState *s)
 
 static void esp_ecc_point_mul(ESPEccState *s, gcry_ctx_t ctx, gcry_mpi_point_t point, size_t len)
 {
+    const ESPEccLayout *layout = ESP_ECC_GET_CLASS(s)->layout;
     gcry_mpi_t k = esp_ecc_mpi_from_le(s->mem[PARAM_K], len);
     gcry_mpi_point_t result = gcry_mpi_point_new(0);
     gcry_mpi_t x = gcry_mpi_new(0);
     gcry_mpi_t y = gcry_mpi_new(0);
 
+    if (layout->mul_small_k_doubles) {
+        gcry_mpi_t order = gcry_mpi_ec_get_mpi("n", ctx, 1);
+
+        if (gcry_mpi_cmp_ui(k, 1) == 0) {
+            gcry_mpi_set_ui(k, 2);
+        } else if (gcry_mpi_cmp(k, order) == 0) {
+            gcry_mpi_sub_ui(k, order, 2);
+        }
+        gcry_mpi_release(order);
+    }
     gcry_mpi_ec_mul(result, k, point, ctx);
-    if (ESP_ECC_GET_CLASS(s)->layout->mul_zero_keeps_point && gcry_mpi_cmp_ui(k, 0) == 0) {
+    if (layout->mul_zero_keeps_point && gcry_mpi_cmp_ui(k, 0) == 0) {
         /* PX and PY keep their values */
     } else if (gcry_mpi_ec_get_affine(x, y, result, ctx) == 0) { /* The point at infinity has no affine form */
         esp_ecc_mpi_to_le(x, s->mem[PARAM_PX], len);
@@ -251,6 +262,7 @@ static const ESPEccLayout esp32c6_ecc_layout = {
     .result_shift = 8,
     .param_count = 3,
     .mem_stride = 0x20,
+    .mul_small_k_doubles = true,
     .date = 0x2201240,
 };
 

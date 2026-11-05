@@ -248,6 +248,7 @@ static void esp_ecdsa_chip_class_init(ObjectClass *klass, void *data)
  * The field positions are from soc/<chip>/register/soc/ecdsa_reg.h in IDF.
  * ESP32-H2 has this layout on chips before v1.2, and QEMU's default eFuse
  * reports v0.0. IDF chooses the layout from DATE and the chip revision.
+ * DATE is the value read from a v0.0 board.
  */
 static const ESPEcdsaLayout esp32h2_ecdsa_layout = {
     .mode_bits = 1,
@@ -256,7 +257,7 @@ static const ESPEcdsaLayout esp32h2_ecdsa_layout = {
     .set_z_shift = 3,
     .mem_base = 0xA00,
     .mem_stride = 0x20,
-    .date = 0x2208190,
+    .date = 0x2207180,
 };
 
 static const ESPEcdsaLayout esp32c61_ecdsa_layout = {
