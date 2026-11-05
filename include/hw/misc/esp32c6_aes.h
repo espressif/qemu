@@ -3,7 +3,8 @@
  *
  * These chips have the registers of the shared esp_aes model at the same
  * offsets. Their extra registers, for pseudo rounds and for GCM on ESP32-H2,
- * are not used by IDF's default config and are not modelled.
+ * are not used by IDF's default config and are not modelled. ESP32-P4 has its
+ * own type, which adds the GCM block mode.
  *
  * Copyright (c) 2026 Espressif Systems (Shanghai) Co. Ltd.
  *

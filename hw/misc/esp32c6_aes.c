@@ -12,7 +12,7 @@
 
 static void esp32p4_aes_class_init(ObjectClass *klass, void *data)
 {
-    ESP_AES_CLASS(klass)->no_gdma = true;
+    ESP_AES_CLASS(klass)->gcm = true;
 }
 
 static const TypeInfo esp32c6_aes_types[] = {

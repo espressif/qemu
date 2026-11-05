@@ -18,7 +18,7 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files('esp_gdma.c', 'esp32
 system_ss.add(when: 'CONFIG_RISCV_ESP32H4', if_true: files('esp_gdma.c', 'esp32c3_gdma.c', 'esp32h4_gdma.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files('esp_gdma.c', 'esp32c3_gdma.c', 'esp32c6_gdma.c'))
 # No GDMA device on the P4 machine yet; esp_sha.c still needs the base symbols.
-system_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files('esp_gdma.c'))
+system_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files('esp_gdma.c', 'esp32p4_axi_gdma.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32H2', if_true: files('esp_gdma.c', 'esp32c3_gdma.c', 'esp32h2_gdma.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C5', if_true: files('esp_ahb_gdma.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files('esp_ahb_gdma.c'))

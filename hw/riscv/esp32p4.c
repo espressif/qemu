@@ -40,6 +40,7 @@
 #include "hw/misc/esp32p4_hp_system.h"
 #include "hw/misc/esp32p4_lp.h"
 #include "hw/misc/esp32p4_sha.h"
+#include "hw/dma/esp32p4_axi_gdma.h"
 #include "hw/misc/esp32c6_aes.h"
 #include "hw/misc/esp32c6_rsa.h"
 #include "hw/misc/esp_ecc.h"
@@ -111,6 +112,7 @@ struct Esp32P4MachineState {
     ESP32P4HpSysClkrstState hp_sys_clkrst;
     ESP32P4HpSystemState hp_system;
     ESP32P4LpState lp;
+    ESP32P4AxiGdmaState axi_gdma;
     ESP32P4ShaState sha;
     ESP32C6AesState aes;
     ESP32C6RsaState rsa;
@@ -632,6 +634,7 @@ static void esp32p4_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "hp_system",
                             &ms->hp_system, TYPE_ESP32P4_HP_SYSTEM);
     object_initialize_child(OBJECT(machine), "lp", &ms->lp, TYPE_ESP32P4_LP);
+    object_initialize_child(OBJECT(machine), "axi_gdma", &ms->axi_gdma, TYPE_ESP32P4_AXI_GDMA);
     object_initialize_child(OBJECT(machine), "sha", &ms->sha, TYPE_ESP32P4_SHA);
     object_initialize_child(OBJECT(machine), "aes", &ms->aes, TYPE_ESP32P4_AES);
     object_initialize_child(OBJECT(machine), "rsa", &ms->rsa, TYPE_ESP32P4_RSA);
@@ -809,8 +812,23 @@ static void esp32p4_machine_init(MachineState *machine)
                            esp32p4_intmatrix_in(ms, P4_ETS_LP_EFUSE_INTR_SOURCE));
     }
 
-    /* SHA accelerator — CPU (M_MEM) mode only, no GDMA link */
+    /* AXI DMA, used by AES and SHA */
     {
+        object_property_set_link(OBJECT(&ms->axi_gdma), "soc_mr", OBJECT(sys_mem), &error_abort);
+        sysbus_realize(SYS_BUS_DEVICE(&ms->axi_gdma), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->axi_gdma), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_AXI_DMA_BASE, mr, 0);
+        for (int i = 0; i < ESP32P4_AXI_GDMA_CHANNEL_COUNT; i++) {
+            qdev_connect_gpio_out_named(DEVICE(&ms->axi_gdma), ESP_GDMA_IRQ_IN_NAME, i,
+                                        esp32p4_intmatrix_in(ms, P4_ETS_AXI_PDMA_IN_CH0_INTR_SOURCE + i));
+            qdev_connect_gpio_out_named(DEVICE(&ms->axi_gdma), ESP_GDMA_IRQ_OUT_NAME, i,
+                                        esp32p4_intmatrix_in(ms, P4_ETS_AXI_PDMA_OUT_CH0_INTR_SOURCE + i));
+        }
+    }
+
+    /* SHA accelerator */
+    {
+        ms->sha.parent.parent.gdma = ESP_GDMA(&ms->axi_gdma);
         sysbus_realize(SYS_BUS_DEVICE(&ms->sha), &error_fatal);
         MemoryRegion *mr =
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->sha), 0);
@@ -819,8 +837,9 @@ static void esp32p4_machine_init(MachineState *machine)
                            esp32p4_intmatrix_in(ms, P4_ETS_SHA_INTR_SOURCE));
     }
 
-    /* AES: block mode only, because the machine has no AXI DMA */
+    /* AES */
     {
+        ms->aes.parent.gdma = ESP_GDMA(&ms->axi_gdma);
         sysbus_realize(SYS_BUS_DEVICE(&ms->aes), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->aes), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_AES_BASE, mr, 0);

@@ -15,20 +15,10 @@
 #include "qemu/osdep.h"
 #include "hw/misc/esp32p4_sha.h"
 
-static void esp32p4_sha_realize(DeviceState *dev, Error **errp)
-{
-    /*
-     * The P4 machine has no GDMA model yet; SHA is only reachable in CPU
-     * (M_MEM) mode, so skip the parent's mandatory GDMA link check.
-     */
-}
-
 static void esp32p4_sha_class_init(ObjectClass *klass, void *data)
 {
-    DeviceClass *dc = DEVICE_CLASS(klass);
     ESPShaClass *class = ESP_SHA_CLASS(klass);
 
-    dc->realize = esp32p4_sha_realize;
     class->message_len = ESP32P4_SHA_MESSAGE_SIZE;
     class->date = ESP32P4_SHA_DATE_REG_VALUE;
 }
