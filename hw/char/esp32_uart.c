@@ -38,12 +38,14 @@ void esp32_uart_update_irq(ESP32UARTState *s)
     uint32_t rx_full_raw = (fifo8_num_used(&s->rx_fifo) >= s->rx_full_threshold);
     uint32_t tx_done_raw = (fifo8_num_used(&s->tx_fifo) == 0);
     uint32_t rxfifo_tout_raw = (s->rxfifo_tout) ? 1 : 0;
+    uint32_t rxfifo_ovf_raw = (s->rxfifo_ovf) ? 1 : 0;
 
     uint32_t int_raw = s->reg[R_UART_INT_RAW];
     int_raw = FIELD_DP32(int_raw, UART_INT_RAW, RXFIFO_FULL, rx_full_raw);
     int_raw = FIELD_DP32(int_raw, UART_INT_RAW, TXFIFO_EMPTY, tx_empty_raw);
     int_raw = FIELD_DP32(int_raw, UART_INT_RAW, TX_DONE, tx_done_raw);
     int_raw = FIELD_DP32(int_raw, UART_INT_RAW, RXFIFO_TOUT, rxfifo_tout_raw);
+    int_raw = FIELD_DP32(int_raw, UART_INT_RAW, RXFIFO_OVF, rxfifo_ovf_raw);
     s->reg[R_UART_INT_RAW] = int_raw;
 
     uint32_t int_st = s->reg[R_UART_INT_RAW] & s->reg[R_UART_INT_ENA];
@@ -145,6 +147,9 @@ static void uart_write(void *opaque, hwaddr addr,
         s->reg[addr / 4] = value;
         if (value & R_UART_INT_CLR_RXFIFO_TOUT_MASK) {
             s->rxfifo_tout = false;
+        }
+        if (value & R_UART_INT_CLR_RXFIFO_OVF_MASK) {
+            s->rxfifo_ovf = false;
         }
         break;
 
@@ -255,26 +260,29 @@ static void uart_receive(void *opaque, const uint8_t *buf, int size)
         s->rxfifo_tout = false;
     }
 
-    /* Move the data into the FIFO */
-    for (int i = 0; i < size && fifo8_num_free(&s->rx_fifo) > 0; i++) {
-        fifo8_push(&s->rx_fifo, buf[i]);
+    /* Move the data into the FIFO. A line has no flow control: what arrives
+     * while the FIFO is full is lost, and the hardware says so with
+     * RXFIFO_OVF.
+     */
+    for (int i = 0; i < size; i++) {
+        if (fifo8_num_free(&s->rx_fifo) > 0) {
+            fifo8_push(&s->rx_fifo, buf[i]);
+        } else {
+            s->rxfifo_ovf = true;
+        }
     }
 
-    /* Receive throttling: some applications (in particular the ESP32 ROM bootloader)
-     * may work incorrectly if the data comes in much faster than what UART baud rate
-     * would allow. This code adds a delay every UART_FIFO_LENGTH bytes, to make the
-     * average data rate match the configured baud rate.
-     * This doesn't need to be very precise, so only add the delay if the FIFO is full
-     * (which most likely means that more data will come).
+    /* The line carries data at the configured baud rate: having taken these
+     * bytes, take nothing more until they would have finished arriving. The
+     * ESP32 ROM bootloader, among others, works incorrectly if data comes in
+     * faster than that.
      */
-    if (fifo8_is_full(&s->rx_fifo)) {
-        s->throttle_rx = true;
-        const int bits_per_symbol = 10;
-        int64_t throttle_time_ns = (int64_t) UART_FIFO_LENGTH * bits_per_symbol * NANOSECONDS_PER_SECOND / s->baud_rate;
-        timer_mod_ns(&s->throttle_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                     throttle_time_ns);
-    }
+    s->throttle_rx = true;
+    const int bits_per_symbol = 10;
+    int64_t throttle_time_ns = (int64_t) size * bits_per_symbol * NANOSECONDS_PER_SECOND / s->baud_rate;
+    timer_mod_ns(&s->throttle_timer,
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                 throttle_time_ns);
 
     esp32_uart_set_rx_timeout(s);
     esp32_uart_update_irq(s);
@@ -286,7 +294,8 @@ static int uart_can_receive(void *opaque)
     if (s->throttle_rx) {
         return 0;
     }
-    return fifo8_num_free(&s->rx_fifo);
+    /* A FIFO's worth of line time, whether or not there is room for it. */
+    return UART_FIFO_LENGTH;
 }
 
 static void uart_event(void *opaque, QEMUChrEvent event)
@@ -317,6 +326,7 @@ static void esp32_uart_reset_hold(Object *obj, ResetType type)
     s->reg[R_UART_RXD_CNT] = 0;
     s->reg[R_UART_INT_ST] = 0;
     s->reg[R_UART_INT_RAW] = 0;
+    s->rxfifo_ovf = false;
     s->reg[R_UART_INT_ENA] = 0;
     s->reg[R_UART_AUTOBAUD] = 0;
     /* Default baud rate divider after reset */

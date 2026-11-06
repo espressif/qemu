@@ -87,6 +87,8 @@ typedef struct ESPUARTState {
     QEMUTimer rx_timeout_timer;
     bool throttle_rx;
     bool rxfifo_tout;
+    /* A byte was lost because the RX FIFO was full. */
+    bool rxfifo_ovf;
     unsigned baud_rate;
 
     Fifo8 rx_fifo;
