@@ -111,6 +111,9 @@ static void irq_handler(void *opaque, int n, int level)
 /*  Region 0 — Interrupt mapping registers                             */
 /* ------------------------------------------------------------------ */
 
+#define MAP_STATUS_START (0x150 / sizeof(uint32_t))
+#define MAP_STATUS_END   (0x15c / sizeof(uint32_t))
+
 static uint64_t map_read(void *opaque, hwaddr addr, unsigned int size)
 {
     ESP32C5IntMatrixState *s = ESP32C5_INTMATRIX(opaque);
@@ -118,6 +121,10 @@ static uint64_t map_read(void *opaque, hwaddr addr, unsigned int size)
 
     if (idx < ESP32C5_INT_MATRIX_INPUTS) {
         return s->irq_map[idx];
+    } else if (idx >= MAP_STATUS_START && idx < MAP_STATUS_END) {
+        /* Raw source levels, whatever the mapping. Read-only. */
+        const uint32_t word = idx - MAP_STATUS_START;
+        return (uint32_t)(s->irq_levels[word / 2] >> ((word % 2) * 32));
     }
     return 0;
 }
