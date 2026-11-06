@@ -1003,6 +1003,7 @@ static void decode_fast_read_cmd(Flash *s)
     switch (get_man(s)) {
     /* Dummy cycles - modeled with bytes writes instead of bits */
     case MAN_SST:
+    case MAN_GIGADEVICE:
         s->needed_bytes += 1;
         break;
     case MAN_WINBOND:
@@ -1103,9 +1104,13 @@ static void decode_qio_read_cmd(Flash *s)
     /* Dummy cycles modeled with bytes writes instead of bits */
     switch (get_man(s)) {
     case MAN_WINBOND:
-    case MAN_GIGADEVICE:
         s->needed_bytes += WINBOND_CONTINUOUS_READ_MODE_CMD_LEN;
         s->needed_bytes += 4;
+        break;
+    case MAN_GIGADEVICE:
+        s->needed_bytes += GIGADEVICE_CONTINUOUS_READ_MODE_CMD_LEN;
+        /* 4 dummy cycles on 4 lines */
+        s->needed_bytes += 2;
         break;
     case MAN_SPANSION:
         s->needed_bytes += SPANSION_CONTINUOUS_READ_MODE_CMD_LEN;

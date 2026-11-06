@@ -146,6 +146,7 @@ typedef struct Esp32SpiTransaction {
     uint32_t cmd;
     int addr_bytes;
     uint32_t addr;
+    int dummy_bytes;
     int data_tx_bytes;
     int data_rx_bytes;
     uint32_t* data;
@@ -179,6 +180,9 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
     esp32_spi_cs_set(s, 0);
     esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
     esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
+    for (int i = 0; i < t->dummy_bytes; ++i) {
+        ssi_transfer(s->spi, 0);
+    }
     esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
     esp32_spi_cs_set(s, 1);
 }
@@ -187,6 +191,25 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
 static inline int bitlen_to_bytes(uint32_t val)
 {
     return (val + 1 + 7) / 8; /* bitlen registers hold number of bits, minus one */
+}
+
+/*
+ * The dummy phase in the bytes the emulated flash counts. A DIO or QIO read has
+ * 4 mode bits at the end of a 28-bit address phase, so the two phases share a
+ * byte. Round down: IDF adds cycles to compensate for input delay, which the
+ * flash does not see as data.
+ */
+static int esp32_spi_dummy_bytes(Esp32SpiState *s, int addr_bits, int addr_bytes)
+{
+    const int cycles = FIELD_EX32(s->user1_reg, SPI_USER1, DUMMY_CYCLELEN) + 1;
+    int lines = 1;
+
+    if (FIELD_EX32(s->ctrl_reg, SPI_CTRL, FREAD_QIO)) {
+        lines = 4;
+    } else if (FIELD_EX32(s->ctrl_reg, SPI_CTRL, FREAD_DIO)) {
+        lines = 2;
+    }
+    return MAX((addr_bits + cycles * lines) / 8 - addr_bytes, 0);
 }
 
 static void maybe_encrypt_data(Esp32SpiState *s)
@@ -284,6 +307,11 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
         if (FIELD_EX32(s->user_reg, SPI_USER, ADDR)) {
             t.addr_bytes = bitlen_to_bytes(FIELD_EX32(s->user1_reg, SPI_USER1, ADDR_BITLEN));
             t.addr = bswap32(s->addr_reg);
+        }
+        if (FIELD_EX32(s->user_reg, SPI_USER, DUMMY)) {
+            const int addr_bits = t.addr_bytes ?
+                FIELD_EX32(s->user1_reg, SPI_USER1, ADDR_BITLEN) + 1 : 0;
+            t.dummy_bytes = esp32_spi_dummy_bytes(s, addr_bits, t.addr_bytes);
         }
         if (FIELD_EX32(s->user_reg, SPI_USER, MOSI)) {
             t.data = &s->data_reg[0];
