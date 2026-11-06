@@ -121,6 +121,8 @@ static void irq_handler(void *opaque, int n, int level)
 
 /* C6 mapping layout mirrors C3: first N words are source→line maps,
  * followed by priority / enable / type / threshold at the same offsets. */
+#define MAP_STATUS_START (0x134 / sizeof(uint32_t))
+#define MAP_STATUS_END   (0x140 / sizeof(uint32_t))
 #define MAP_PRIO_START  (0x118 / sizeof(uint32_t))
 #define MAP_PRIO_END    (0x190 / sizeof(uint32_t))
 #define MAP_ENABLE_REG  (0x104 / sizeof(uint32_t))
@@ -134,6 +136,10 @@ static uint64_t map_read(void *opaque, hwaddr addr, unsigned int size)
 
     if (idx < ESP32C6_INT_MATRIX_INPUTS) {
         return s->irq_map[idx];
+    } else if (idx >= MAP_STATUS_START && idx < MAP_STATUS_END) {
+        /* Raw source levels, whatever the mapping. Read-only. */
+        const uint32_t word = idx - MAP_STATUS_START;
+        return (uint32_t)(s->irq_levels[word / 2] >> ((word % 2) * 32));
     } else if (idx >= MAP_PRIO_START && idx < MAP_PRIO_END) {
         return s->irq_prio[idx - MAP_PRIO_START + 1];
     } else if (idx == MAP_THRESH_REG) {
@@ -160,6 +166,8 @@ static void map_write(void *opaque, hwaddr addr, uint64_t value,
             update_line(s, old_line);
             update_line(s, new_line);
         }
+    } else if (idx >= MAP_STATUS_START && idx < MAP_STATUS_END) {
+        /* Read-only */
     } else if (idx >= MAP_PRIO_START && idx < MAP_PRIO_END) {
         const uint32_t line = idx - MAP_PRIO_START + 1;
         s->irq_prio[line] = value & 0xf;
