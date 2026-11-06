@@ -31,7 +31,7 @@ static ESPHashAlg esp_sha_algs[] = {
     [ESP_SHA_224_MODE]  = {
         .init     = (hash_init) sha224_init,
         .compress = (hash_compress) sha224_compress,
-        .len      = SHA224_HASH_SIZE
+        .len      = sizeof(struct sha256_state)
     },
     [ESP_SHA_256_MODE]  = {
         .init     = (hash_init) sha256_init,

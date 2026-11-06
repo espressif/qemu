@@ -25,6 +25,7 @@
 #define ESP_AES_TEXT_REG_CNT 4
 #define ESP_AES_KEY_REG_CNT  8
 #define ESP_AES_IV_REG_CNT   16
+#define ESP_AES_BLOCK_SIZE   16
 
 #define ESP_AES_IDLE    0
 #define ESP_AES_WORK    1
@@ -49,6 +50,7 @@
 #define ESP_AES_CFB8_CIPHER   4
 #define ESP_AES_CFB128_CIPHER 5
 #define ESP_AES_CIPHER_COUNT  6
+#define ESP_AES_GCM_CIPHER    6
 
 
 typedef struct ESPAesState {
@@ -70,6 +72,13 @@ typedef struct ESPAesState {
     uint32_t int_ena_reg;
     qemu_irq irq;
 
+    /* GCM registers. H, J0 and T0 hold bytes in the order of the standard. */
+    uint8_t gcm_h[ESP_AES_BLOCK_SIZE];
+    uint8_t gcm_j0[ESP_AES_BLOCK_SIZE];
+    uint8_t gcm_t0[ESP_AES_BLOCK_SIZE];
+    uint32_t aad_block_num_reg;
+    uint32_t remainder_bit_num_reg;
+
     /* Public: must be set by the machine before realizing current instance */
     ESPGdmaState *gdma;
 } ESPAesState;
@@ -77,6 +86,8 @@ typedef struct ESPAesState {
 
 typedef struct ESPAesClass {
     SysBusDeviceClass parent_class;
+    /* This chip has the GCM block mode and its registers */
+    bool gcm;
     /* Virtual methods*/
     void (*aes_block_start)(ESPAesState *s, const uint32_t *key, const uint32_t *text_in, uint32_t *text_out, const uint32_t mode_reg);
 } ESPAesClass;
@@ -139,6 +150,13 @@ REG32(AES_BLK_NUM_REG,   0x98)
 
 REG32(AES_INC_SEL_REG,   0x9C)
     FIELD(AES_INC_SEL_REG, AES_INC_SEL, 0, 1)
+
+REG32(AES_H_MEM,         0x60)
+REG32(AES_J0_MEM,        0x70)
+REG32(AES_T0_MEM,        0x80)
+REG32(AES_AAD_BLOCK_NUM_REG,     0xA0)
+REG32(AES_REMAINDER_BIT_NUM_REG, 0xA4)
+REG32(AES_CONTINUE_REG,  0xA8)
 
 REG32(AES_INT_CLR_REG,   0xAC)
     FIELD(AES_INT_CLR_REG, AES_INT_CLR, 0, 1)

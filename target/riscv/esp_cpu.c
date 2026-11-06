@@ -8,6 +8,7 @@
  * (at your option) any later version.
  */
 #include "qemu/osdep.h"
+#include "qemu/main-loop.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
@@ -18,13 +19,15 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "sysemu/reset.h"
+#include "exec/cpu-common.h"
 #include "esp_cpu.h"
 
-#define BIT_SET(reg, bit)   ((reg) & BIT(bit))
-#define CLEAR_BIT(reg, bit) do { (reg) &= ~BIT(bit); } while(0)
-#define SET_BIT(reg, bit)   do { (reg) |= BIT(bit); } while(0)
+#define BIT_SET(reg, bit)   ((reg) & BIT_ULL(bit))
+#define CLEAR_BIT(reg, bit) do { (reg) &= ~BIT_ULL(bit); } while(0)
+#define SET_BIT(reg, bit)   do { (reg) |= BIT_ULL(bit); } while(0)
 
 /* CSR-related */
+#define ESP_CPU_CSR_MTVT        0x307
 #define ESP_CPU_CSR_PCER_M      0x7E0
 #define ESP_CPU_CSR_PCMR_M      0x7E1
 #define ESP_CPU_CSR_MCYCLE_M    0x7E2
@@ -47,13 +50,73 @@
 #define ESP_CPU_CSR_GPIO_IN     0x804
 #define ESP_CPU_CSR_GPIO_OUT    0x805
 
+/* Espressif PMA (Physical Memory Attribute) CSR ranges.
+ * Only registered when the SOC has PMA (ESP32-C6 and later). */
+#define ESP_CPU_CSR_PMACFG0     0xBC0
+#define ESP_CPU_CSR_PMACFG15    0xBCF
+#define ESP_CPU_CSR_PMAADDR0    0xBD0
+#define ESP_CPU_CSR_PMAADDR15   0xBDF
+
+/* PMP entries 16..31. The generic RISC-V target stops at MAX_RISCV_PMPS (16),
+ * so these CSRs are absent from its table and any access traps as an illegal
+ * instruction. The ESP32-P4 rev3 startup code drives entries up to 31 --
+ * see components/esp_hw_support/port/esp32p4/cpu_region_protect.c --
+ * so accept and store them here. */
+#define ESP_CPU_CSR_PMPCFG4     0x3A4
+#define ESP_CPU_CSR_PMPCFG7     0x3A7
+#define ESP_CPU_CSR_PMPADDR16   0x3C0
+#define ESP_CPU_CSR_PMPADDR31   0x3CF
+
+/* CLIC CSRs (ESP32-C5 and other CLIC-capable ESP cores). */
+#define ESP_CPU_CSR_UTVT          0x007
+#define ESP_CPU_CSR_MTVT          0x307
+#define ESP_CPU_CSR_MNXTI         0x345
+#define ESP_CPU_CSR_MINTSTATUS_A  0x346
+#define ESP_CPU_CSR_MINTTHRESH    0x347
+#define ESP_CPU_CSR_UINTSTATUS    0xCB1
+#define ESP_CPU_CSR_MINTSTATUS    0xFB1
+
+/* Machine Hardware Configuration CSR range (mhcr at 0x7C1, mhint at 0x7C5,
+ * etc.). */
+#define ESP_CPU_CSR_MHCR_FIRST    0x7C0
+#define ESP_CPU_CSR_MHCR_LAST     0x7CF
+
+/* mexstatus on the ESP32-C5 lives at the same number as PCMR_M on older
+ * cores; we keep both names for clarity at the call sites. */
+#define ESP_CPU_CSR_MEXSTATUS     ESP_CPU_CSR_PCMR_M
+
+/* CLIC level fields. All ESP CLIC SOCs have NLBITS = 3: clicintctl[7:5] holds
+ * the level and the bits below it read as 1 when computing the level. */
+#define ESP_CPU_CLIC_LEVEL_PAD    0x1f
+#define ESP_CPU_CLIC_ATTR_SHV     BIT(0)
+#define ESP_CPU_MINTSTATUS_MIL_S  24
+#define ESP_CPU_MCAUSE_MPIL_S     16
+#define ESP_CPU_MCAUSE_MPIL_LEN   8
+
+/* Espressif DSP extension CSRs (see IDF riscv/csr_dsp.h). */
+#define ESP_CPU_CSR_DSP_STATE     0x7f3
+
+/* State of the hardware loop and PIE coprocessors (see IDF riscv/csr_hwlp.h and
+ * riscv/csr_pie.h). Only the low two bits are implemented. */
+#define ESP_CPU_CSR_HWLP_STATE    0x7f1
+#define ESP_CPU_CSR_PIE_STATE     0x7f2
+#define ESP_CPU_COPROC_STATE_MASK 0x3
+#define ESP_CPU_CSR_DSP_XACC_L    0x806
+#define ESP_CPU_CSR_DSP_XACC_H    0x807
+#define ESP_CPU_CSR_DSP_SAR       0x809
+#define ESP_CPU_CSR_DSP_STATUS    0x80a
+
+/* Illegal instruction reason, see EXT_ILL_CSR in IDF riscv/vectors.S. */
+#define ESP_CPU_CSR_EXT_ILL       0x7f0
+#define ESP_CPU_EXT_ILL_RSN_FPU   BIT(0)
+
 
 static RISCVException esp_cpu_csr_predicate(CPURISCVState *env, int csrno) {
     return RISCV_EXCP_NONE;
 }
 
 
-static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter* cc)
+static uint64_t esp_cpu_update_cycles(ESPCPUCycleCounter *cc)
 {
     /* Let's simulate the cycle count between two reads of MCYCLE thanks to the time API. */
     /* Calculate the time elapsed between now and the previous call */
@@ -75,7 +138,49 @@ static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter* cc)
     }
     cc->former_time = now;
     cc->cycles += diff;
+
     return cc->cycles;
+}
+
+
+void esp_cpu_set_freq(EspRISCVCPU *cpu, uint32_t freq_hz)
+{
+    /* The time elapsed so far was spent at the previous frequency */
+    esp_cpu_update_cycles(&cpu->cc_machine);
+    esp_cpu_update_cycles(&cpu->cc_user);
+    cpu->cc_machine.divider = 1000000000000ULL / freq_hz;
+    cpu->cc_user.divider = cpu->cc_machine.divider;
+}
+
+
+static uint64_t esp_cpu_get_cycles(ESPCPUCycleCounter *cc)
+{
+    const uint64_t cycles = esp_cpu_update_cycles(cc);
+    const uint64_t now = cc->former_time;
+
+    /*
+     * Tight spin loops that poll mcycle (e.g. ets_delay_us) can hold the CPU
+     * in translated-block execution indefinitely, starving the QEMU main loop
+     * of a chance to fire expired QEMUTimers (systimer alarms, etc.).
+     *
+     * Directly run expired virtual-clock timers and then kick the CPU out of
+     * the current TB so pending interrupts (raised by the timer callbacks)
+     * can be delivered.
+     */
+    {
+        static uint64_t last_yield_ns;
+        if (now - last_yield_ns >= 50000) {
+            last_yield_ns = now;
+            /* Timer callbacks expect the BQL, as they have in the main loop */
+            BQL_LOCK_GUARD();
+            bool ran = qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+            if (ran && current_cpu) {
+                cpu_exit(current_cpu);
+            }
+        }
+    }
+
+    return cycles;
 }
 
 
@@ -99,8 +204,54 @@ static RISCVException esp_cpu_csr_read(CPURISCVState *env, int csrno, target_ulo
         *ret_value = esp_cpu_get_cycles(&s->cc_user);
     } else if (csrno == ESP_CPU_CSR_MCYCLE_M) {
         *ret_value = esp_cpu_get_cycles(&s->cc_machine);
+    } else if (csrno == CSR_MCYCLE || csrno == CSR_CYCLE) {
+        *ret_value = (target_ulong)esp_cpu_get_cycles(&s->cc_machine);
+    } else if (csrno == CSR_MCYCLEH || csrno == CSR_CYCLEH) {
+        *ret_value = (target_ulong)(esp_cpu_get_cycles(&s->cc_machine) >> 32);
     } else if (csrno >= ESP_CPU_CSR_TSELECT && csrno <= ESP_CPU_CSR_TCONTROL) {
         /* Nothing special to do here */
+    } else if (csrno >= ESP_CPU_CSR_PMACFG0 && csrno <= ESP_CPU_CSR_PMACFG15) {
+        *ret_value = s->pmacfg[csrno - ESP_CPU_CSR_PMACFG0];
+    } else if (csrno >= ESP_CPU_CSR_PMAADDR0 && csrno <= ESP_CPU_CSR_PMAADDR15) {
+        *ret_value = s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0];
+    } else if (csrno >= ESP_CPU_CSR_PMPCFG4 && csrno <= ESP_CPU_CSR_PMPCFG7) {
+        *ret_value = s->pmpcfg_hi[csrno - ESP_CPU_CSR_PMPCFG4];
+    } else if (csrno >= ESP_CPU_CSR_PMPADDR16 && csrno <= ESP_CPU_CSR_PMPADDR31) {
+        *ret_value = s->pmpaddr_hi[csrno - ESP_CPU_CSR_PMPADDR16];
+    } else if (csrno >= ESP_CPU_CSR_MHCR_FIRST && csrno <= ESP_CPU_CSR_MHCR_LAST) {
+        *ret_value = s->mhcr[csrno - ESP_CPU_CSR_MHCR_FIRST];
+    } else if (csrno == ESP_CPU_CSR_MEXSTATUS) {
+        *ret_value = s->mexstatus;
+    } else if (csrno == ESP_CPU_CSR_UTVT) {
+        *ret_value = s->utvt;
+    } else if (csrno == ESP_CPU_CSR_MTVT) {
+        *ret_value = s->mtvt;
+    } else if (csrno == ESP_CPU_CSR_MNXTI) {
+        *ret_value = s->mnxti;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS_A) {
+        *ret_value = s->mintstatus_alt;
+    } else if (csrno == ESP_CPU_CSR_MINTTHRESH) {
+        *ret_value = s->mintthresh;
+    } else if (csrno == ESP_CPU_CSR_UINTSTATUS) {
+        *ret_value = s->uintstatus;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
+        *ret_value = s->mintstatus;
+    } else if (csrno == ESP_CPU_CSR_HWLP_STATE) {
+        *ret_value = s->hwlp_state;
+    } else if (csrno == ESP_CPU_CSR_PIE_STATE) {
+        *ret_value = s->pie_state;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATE) {
+        *ret_value = s->dsp_state;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_L) {
+        *ret_value = s->dsp_xacc_l;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_H) {
+        *ret_value = s->dsp_xacc_h;
+    } else if (csrno == ESP_CPU_CSR_DSP_SAR) {
+        *ret_value = s->dsp_sar;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATUS) {
+        *ret_value = s->dsp_status;
+    } else if (csrno == ESP_CPU_CSR_EXT_ILL) {
+        *ret_value = s->ext_ill;
     } else {
         *ret_value = 0;
     }
@@ -115,8 +266,59 @@ static RISCVException esp_cpu_csr_write(CPURISCVState *env, int csrno, target_ul
         s->cc_user.cycles = new_value;
     } else if (csrno == ESP_CPU_CSR_MCYCLE_M) {
         s->cc_machine.cycles = new_value;
+    } else if (csrno == CSR_MCYCLE) {
+        esp_cpu_update_cycles(&s->cc_machine);
+        s->cc_machine.cycles = deposit64(s->cc_machine.cycles, 0, 32, new_value);
+    } else if (csrno == CSR_MCYCLEH) {
+        esp_cpu_update_cycles(&s->cc_machine);
+        s->cc_machine.cycles = deposit64(s->cc_machine.cycles, 32, 32, new_value);
     } else if (csrno >= ESP_CPU_CSR_TSELECT && csrno <= ESP_CPU_CSR_TCONTROL) {
         /* Nothing special to do here */
+    } else if (csrno >= ESP_CPU_CSR_PMACFG0 && csrno <= ESP_CPU_CSR_PMACFG15) {
+        s->pmacfg[csrno - ESP_CPU_CSR_PMACFG0] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_PMAADDR0 && csrno <= ESP_CPU_CSR_PMAADDR15) {
+        /* On C6/H2 all 32 bits are writable (4-byte granularity).  C5 has
+         * 128-byte granularity (bottom bits hardwired 0); enforce per-SOC
+         * masking here if/when this code is exercised on a CLIC SOC. */
+        s->pmaaddr[csrno - ESP_CPU_CSR_PMAADDR0] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_PMPCFG4 && csrno <= ESP_CPU_CSR_PMPCFG7) {
+        s->pmpcfg_hi[csrno - ESP_CPU_CSR_PMPCFG4] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_PMPADDR16 && csrno <= ESP_CPU_CSR_PMPADDR31) {
+        s->pmpaddr_hi[csrno - ESP_CPU_CSR_PMPADDR16] = (uint32_t)new_value;
+    } else if (csrno >= ESP_CPU_CSR_MHCR_FIRST && csrno <= ESP_CPU_CSR_MHCR_LAST) {
+        s->mhcr[csrno - ESP_CPU_CSR_MHCR_FIRST] = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_MEXSTATUS) {
+        s->mexstatus = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_UTVT) {
+        s->utvt = new_value;
+    } else if (csrno == ESP_CPU_CSR_MTVT) {
+        s->mtvt = new_value;
+    } else if (csrno == ESP_CPU_CSR_MNXTI) {
+        s->mnxti = new_value;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS_A) {
+        s->mintstatus_alt = new_value;
+    } else if (csrno == ESP_CPU_CSR_MINTTHRESH) {
+        s->mintthresh = new_value & 0xff;
+    } else if (csrno == ESP_CPU_CSR_UINTSTATUS) {
+        s->uintstatus = new_value;
+    } else if (csrno == ESP_CPU_CSR_MINTSTATUS) {
+        s->mintstatus = new_value;
+    } else if (csrno == ESP_CPU_CSR_HWLP_STATE) {
+        s->hwlp_state = new_value & ESP_CPU_COPROC_STATE_MASK;
+    } else if (csrno == ESP_CPU_CSR_PIE_STATE) {
+        s->pie_state = new_value & ESP_CPU_COPROC_STATE_MASK;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATE) {
+        s->dsp_state = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_L) {
+        s->dsp_xacc_l = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_XACC_H) {
+        s->dsp_xacc_h = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_SAR) {
+        s->dsp_sar = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_DSP_STATUS) {
+        s->dsp_status = (uint32_t)new_value;
+    } else if (csrno == ESP_CPU_CSR_EXT_ILL) {
+        s->ext_ill = (uint32_t)new_value;
     }
 
     return RISCV_EXCP_NONE;
@@ -215,8 +417,7 @@ static void esp_cpu_irq_handler(void *opaque, int n, int level)
 {
     EspRISCVCPU *cpu = (EspRISCVCPU*) opaque;
 
-    /* Lines go from 1 to 31 included */
-    assert(n <= ESP_CPU_INT_LINES);
+    assert(n <= ESP_CPU_INT_LINES_MAX);
 
     if (n == 0) {
         return;
@@ -232,9 +433,115 @@ static void esp_cpu_irq_handler(void *opaque, int n, int level)
 }
 
 
+static uint8_t esp_cpu_clic_get_mil(EspRISCVCPU *cpu)
+{
+    return cpu->mintstatus >> ESP_CPU_MINTSTATUS_MIL_S;
+}
+
+
+void esp_cpu_clic_set_line(EspRISCVCPU *cpu, uint32_t line, uint8_t attr, uint8_t ctl)
+{
+    assert(line <= ESP_CPU_INT_LINES_MAX);
+    cpu->clic_line_attr[line] = attr;
+    cpu->clic_line_ctl[line] = ctl;
+}
+
+
+/**
+ * Pick the line to take on a CLIC core: the highest level above both mintstatus.mil
+ * and mintthresh, and among equal levels the highest line number.
+ */
+static uint32_t esp_cpu_clic_select_irq_cause(EspRISCVCPU *cpu)
+{
+    const uint8_t threshold = MAX(esp_cpu_clic_get_mil(cpu), cpu->mintthresh);
+    uint32_t cause = 0;
+    uint8_t best_level = 0;
+
+    for (uint32_t i = 1; i <= ESP_CPU_INT_LINES_MAX; i++) {
+        const uint8_t level = cpu->clic_line_ctl[i] | ESP_CPU_CLIC_LEVEL_PAD;
+        if (BIT_SET(cpu->irq_lines, i) && level > threshold && level >= best_level) {
+            cause = i;
+            best_level = level;
+        }
+    }
+
+    return cause;
+}
+
+
+/**
+ * mret on a CLIC core restores the interrupt level saved in mcause.mpil. IDF relies
+ * on this: its handler restores mcause before returning and never lowers mil itself.
+ */
+static void esp_cpu_clic_mret(CPURISCVState *env)
+{
+    EspRISCVCPU *cpu = esp_cpu_riscv_to_cpu(env);
+    const uint32_t mpil = extract32(env->mcause, ESP_CPU_MCAUSE_MPIL_S,
+                                    ESP_CPU_MCAUSE_MPIL_LEN);
+
+    cpu->mintstatus = mpil << ESP_CPU_MINTSTATUS_MIL_S;
+}
+
+
+static bool esp_cpu_insn_is_fpu(uint32_t insn)
+{
+    if ((insn & 3) != 3) {
+        /* RV32 C.FLW, C.FSW, C.FLWSP and C.FSWSP */
+        const uint32_t funct3 = (insn >> 13) & 7;
+        return (insn & 1) == 0 && (funct3 == 3 || funct3 == 7);
+    }
+
+    switch (insn & 0x7f) {
+    case 0x07: /* LOAD-FP */
+    case 0x27: /* STORE-FP */
+    case 0x43: /* MADD */
+    case 0x47: /* MSUB */
+    case 0x4b: /* NMSUB */
+    case 0x4f: /* NMADD */
+    case 0x53: /* OP-FP */
+        return true;
+    default:
+        return false;
+    }
+}
+
+
+/**
+ * Called for synchronous exceptions only, esp_cpu_exec_interrupt handles interrupts.
+ * An exception leaves mil unchanged, but mcause.mpil must still record it so that
+ * the mret ending the exception handler restores the same level.
+ */
+static void esp_cpu_do_interrupt(CPUState *cs)
+{
+    EspRISCVCPU *cpu = ESP_CPU(cs);
+    CPURISCVState *env = &cpu->parent_obj.env;
+    const bool semihost = cs->exception_index == RISCV_EXCP_SEMIHOST;
+
+    /* IDF enables the FPU lazily, based on the reason in CSR 0x7f0 */
+    if (cs->exception_index == RISCV_EXCP_ILLEGAL_INST &&
+        get_field(env->mstatus, MSTATUS_FS) == EXT_STATUS_DISABLED &&
+        esp_cpu_insn_is_fpu(env->bins)) {
+        cpu->ext_ill |= ESP_CPU_EXT_ILL_RSN_FPU;
+    }
+
+    riscv_cpu_do_interrupt(cs);
+
+    /* A semihosting call returns to the guest without taking a trap */
+    if (cpu->clic_ext_irq && !semihost) {
+        env->mcause = deposit32(env->mcause, ESP_CPU_MCAUSE_MPIL_S,
+                                ESP_CPU_MCAUSE_MPIL_LEN,
+                                esp_cpu_clic_get_mil(cpu));
+    }
+}
+
+
 static uint32_t esp_cpu_select_irq_cause(EspRISCVCPU *cpu)
 {
-    for (uint32_t i = 1; i <= ESP_CPU_INT_LINES; i++) {
+    if (cpu->clic_ext_irq) {
+        return esp_cpu_clic_select_irq_cause(cpu);
+    }
+
+    for (uint32_t i = 1; i <= ESP_CPU_INT_LINES_MAX; i++) {
         if (BIT_SET(cpu->irq_lines, i)) {
             return i;
         }
@@ -253,6 +560,10 @@ static bool esp_cpu_has_work(CPUState *cs)
 {
     EspRISCVCPU *cpu = ESP_CPU(cs);
 
+    if (cpu->stalled) {
+        return false;
+    }
+
     if (cpu->irq_lines != 0 || (cs->interrupt_request & CPU_INTERRUPT_HARD)) {
         return true;
     }
@@ -267,9 +578,6 @@ static bool esp_cpu_has_work(CPUState *cs)
  */
 static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
-    /* We could re-implement the whole interrupt process from here.
-     * The simplest solution however is to call the parent's implementation and
-     * replace the most important part for us: the mcause. */
     EspRISCVCPU *cpu = ESP_CPU(cs);
     EspRISCVCPUClass *klass = ESP_CPU_GET_CLASS(cpu);
     const uint32_t cause = esp_cpu_select_irq_cause(cpu);
@@ -297,25 +605,57 @@ static bool esp_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
      */
     CPURISCVState *env = &cpu->parent_obj.env;
     target_ulong saved_mie = 0;
-    if (cpu->mie_as_bitmap) {
+    const bool force_meie = cpu->mie_as_bitmap || cpu->clic_ext_irq;
+    if (force_meie) {
         saved_mie = env->mie;
         env->mie |= MIP_MEIP;
     }
 
     const bool accepted = klass->parent_exec_interrupt(cs, interrupt_request);
 
-    if (cpu->mie_as_bitmap) {
+    if (force_meie) {
         env->mie = saved_mie;
     }
 
     if (accepted) {
-        const bool vectored = (env->mtvec & 3) == 1;
+        /*
+         * On CLIC-based chips (ESP32-C5), the ROM's
+         * esp_rom_route_intr_matrix() already stores CLIC interrupt
+         * numbers (raw_line + 16) in the mapping registers.  The
+         * interrupt matrix therefore outputs CLIC numbers directly,
+         * so no additional offset is needed here.
+         */
+        unsigned mode = env->mtvec & 3;
 
-        /* Update the mcause and the relevant PC */
         env->mcause = RISCV_EXCP_INT_FLAG | cause;
 
-        /* Recalculate the PC thanks to the cause */
-        env->pc = (env->mtvec >> 2 << 2) + (vectored ? cause * 4 : 0);
+        if (cpu->clic_ext_irq) {
+            const uint8_t level = cpu->clic_line_ctl[cause] | ESP_CPU_CLIC_LEVEL_PAD;
+
+            env->mcause = deposit32(env->mcause, ESP_CPU_MCAUSE_MPIL_S,
+                                    ESP_CPU_MCAUSE_MPIL_LEN,
+                                    esp_cpu_clic_get_mil(cpu));
+            cpu->mintstatus = (uint32_t)level << ESP_CPU_MINTSTATUS_MIL_S;
+        }
+
+        if (cpu->clic_ext_irq) {
+            /*
+             * A line with clicintattr.shv set takes its handler address from the
+             * table at mtvt. Any other line jumps to the base in mtvec[31:6], the
+             * same entry as exceptions, whatever mtvec's mode field holds.
+             */
+            if (cpu->clic_line_attr[cause] & ESP_CPU_CLIC_ATTR_SHV) {
+                uint32_t handler = 0;
+                cpu_memory_rw_debug(cs, cpu->mtvt + 4 * cause,
+                                    (uint8_t *)&handler, 4, false);
+                env->pc = le32_to_cpu(handler);
+            } else {
+                env->pc = (env->mtvec >> 6) << 6;
+            }
+        } else {
+            target_ulong base = env->mtvec >> 2 << 2;
+            env->pc = base + (mode == 1 ? 4 * cause : 0);
+        }
     }
 
     /* Similarly, make sure the parent IRQ reflects the current state */
@@ -336,6 +676,35 @@ static void esp_cpu_reset(void *opaque)
     EspRISCVCPU *cpu = opaque;
     cpu->irq_lines = 0;
     cpu->mie_enabled = 0;
+    memset(cpu->pmacfg, 0, sizeof(cpu->pmacfg));
+    memset(cpu->pmaaddr, 0, sizeof(cpu->pmaaddr));
+    memset(cpu->pmpcfg_hi, 0, sizeof(cpu->pmpcfg_hi));
+    memset(cpu->pmpaddr_hi, 0, sizeof(cpu->pmpaddr_hi));
+    memset(cpu->mhcr, 0, sizeof(cpu->mhcr));
+    cpu->mexstatus = 0;
+    cpu->hwlp_state = 0;
+    cpu->pie_state = 0;
+    cpu->dsp_state = 0;
+    cpu->dsp_xacc_l = 0;
+    cpu->dsp_xacc_h = 0;
+    cpu->dsp_sar = 0;
+    cpu->dsp_status = 0;
+    cpu->ext_ill = 0;
+    cpu->utvt = 0;
+    cpu->mtvt = 0;
+    cpu->mnxti = 0;
+    cpu->mintstatus_alt = 0;
+    cpu->mintthresh = 0;
+    cpu->uintstatus = 0;
+    cpu->mintstatus = 0;
+    memset(cpu->clic_line_attr, 0, sizeof(cpu->clic_line_attr));
+    memset(cpu->clic_line_ctl, 0, sizeof(cpu->clic_line_ctl));
+    cpu->cc_machine.cycles = 0;
+    cpu->cc_machine.former_time = 0;
+    cpu->cc_machine.former_rem_cycles = 0;
+    cpu->cc_user.cycles = 0;
+    cpu->cc_user.former_time = 0;
+    cpu->cc_user.former_rem_cycles = 0;
     qemu_irq_lower(cpu->parent_irq);
     cpu_reset(CPU(cpu));
 }
@@ -359,10 +728,18 @@ static void esp_cpu_realize(DeviceState *dev, Error **errp)
      * ESP32-C6 (and later) IDF startup code to configure memory region access
      * permissions.  Only register them when the SOC is known to support PMA,
      * since the ESP32-C3 also uses this `esp_cpu` implementation but doesn't
-     * implement PMA in hardware.
-     * pmacfg0-15 at 0xBC0-0xBCF, pmaaddr0-15 at 0xBD0-0xBDF */
+     * implement PMA in hardware. */
     if (espcpu->has_pma) {
-        for (int i = 0xBC0; i <= 0xBDF; i++) {
+        for (int i = ESP_CPU_CSR_PMACFG0; i <= ESP_CPU_CSR_PMAADDR15; i++) {
+            riscv_set_csr_ops(i, &esp_cpu_csr_ops);
+        }
+    }
+
+    if (espcpu->has_pmp32) {
+        for (int i = ESP_CPU_CSR_PMPCFG4; i <= ESP_CPU_CSR_PMPCFG7; i++) {
+            riscv_set_csr_ops(i, &esp_cpu_csr_ops);
+        }
+        for (int i = ESP_CPU_CSR_PMPADDR16; i <= ESP_CPU_CSR_PMPADDR31; i++) {
             riscv_set_csr_ops(i, &esp_cpu_csr_ops);
         }
     }
@@ -375,6 +752,10 @@ static void esp_cpu_realize(DeviceState *dev, Error **errp)
     if (espcpu->mie_as_bitmap) {
         riscv_set_csr_ops(CSR_MIE, &esp_cpu_mie_csr_ops);
     }
+
+    if (espcpu->clic_ext_irq) {
+        espcpu->parent_obj.env.mret_hook = esp_cpu_clic_mret;
+    }
 }
 
 static struct TCGCPUOps tcg_ops = { 0 };
@@ -384,6 +765,14 @@ static void esp_cpu_override_tcg_interrupts(Object *obj)
     EspRISCVCPUClass *klass = ESP_CPU_GET_CLASS(obj);
     CPUClass *cc = CPU_CLASS(klass);
     EspRISCVCPUClass *cpuclass = ESP_CPU_CLASS(klass);
+
+    /* `tcg_ops` and the class are shared by every instance, but instance_init
+     * runs once per CPU. On a dual-core SOC the second pass would copy the
+     * already-patched table onto itself and latch esp_cpu_exec_interrupt as
+     * its own parent, recursing until the stack is exhausted. */
+    if (cc->tcg_ops == &tcg_ops) {
+        return;
+    }
 
     /* The goal of this RISC-V CPU child class is to override the way interrupts are handled.
      * In theory, it would be enough to override `do_interrupt` function from the CPU's TCGCPUOps
@@ -398,6 +787,7 @@ static void esp_cpu_override_tcg_interrupts(Object *obj)
 
     /* Replace with our overridden implementations */
     tcg_ops.cpu_exec_interrupt = esp_cpu_exec_interrupt;
+    tcg_ops.do_interrupt = esp_cpu_do_interrupt;
     tcg_ops.cpu_exec_halt = esp_cpu_has_work;
     cc->tcg_ops = &tcg_ops;
 }
@@ -420,7 +810,8 @@ static void esp_cpu_init(Object *obj)
     /* Initialize the IRQ lines */
     qdev_init_gpio_in_named_with_opaque(DEVICE(s),
                                         esp_cpu_irq_handler, s,
-                                        ESP_CPU_IRQ_LINES_NAME, ESP_CPU_INT_LINES + 1);
+                                        ESP_CPU_IRQ_LINES_NAME,
+                                        ESP_CPU_INT_LINES_MAX + 1);
 
     /* Initialize the parent IRQ line that will be used to notify the parent class when an interrupt
      * request is incoming. */
@@ -443,6 +834,38 @@ static void esp_cpu_init(Object *obj)
         riscv_set_csr_ops(i, &esp_cpu_csr_ops);
     }
 
+    /* CLIC-related CSRs (ESP32-C5 uses CLIC interrupt controller).  Always
+     * registered (zero cost on PLIC SOCs since the guest never touches
+     * them); the CSRs are read/written through the typed fields above. */
+    riscv_set_csr_ops(ESP_CPU_CSR_UTVT,         &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MTVT,         &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MNXTI,        &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MINTSTATUS_A, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MINTTHRESH,   &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_UINTSTATUS,   &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_MINTSTATUS,   &esp_cpu_csr_ops);
+
+    /* Coprocessor state CSRs (ESP32-P4).  Always registered; other SOCs never
+     * touch them. */
+    riscv_set_csr_ops(ESP_CPU_CSR_HWLP_STATE, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_PIE_STATE,  &esp_cpu_csr_ops);
+
+    /* DSP extension CSRs (ESP32-H4 / P4).  Always registered; non-DSP SOCs
+     * never touch them.  Default state 0 (Off) lets ISR probes skip the
+     * DSP save/restore path. */
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_STATE,  &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_XACC_L, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_XACC_H, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_SAR,    &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_DSP_STATUS, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(ESP_CPU_CSR_EXT_ILL,    &esp_cpu_csr_ops);
+
+    /* Machine Hardware Configuration CSRs (ESP32-C5 branch predictor, etc.)
+     * 0x7C0..0x7CF; backed by `mhcr[16]`. */
+    for (int i = ESP_CPU_CSR_MHCR_FIRST; i <= ESP_CPU_CSR_MHCR_LAST; i++) {
+        riscv_set_csr_ops(i, &esp_cpu_csr_ops);
+    }
+
     /* Register all non-standard Control and Status registers */
     riscv_set_csr_ops(ESP_CPU_CSR_PCER_M, &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_PCMR_M, &esp_cpu_csr_ops);
@@ -451,6 +874,20 @@ static void esp_cpu_init(Object *obj)
     riscv_set_csr_ops(ESP_CPU_CSR_PCER_U, &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_PCMR_U, &esp_cpu_csr_ops);
     riscv_set_csr_ops(ESP_CPU_CSR_MCYCLE_U, &esp_cpu_csr_ops);
+
+    /*
+     * Override the standard RISC-V mcycle/mcycleh CSRs.  The default PMU
+     * handler returns raw icount (instruction count) which does not match
+     * the target CPU frequency.  Route through esp_cpu_get_cycles so that
+     * ROM functions like ets_delay_us see a cycle rate that matches the
+     * configured clock (e.g. 96 MHz for ESP32-H2).
+     * The cycle/cycleh aliases return the host TSC by default. IDF reads them
+     * on SOCs without the 0x7E2 performance counter.
+     */
+    riscv_set_csr_ops(CSR_MCYCLE, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(CSR_MCYCLEH, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(CSR_CYCLE, &esp_cpu_csr_ops);
+    riscv_set_csr_ops(CSR_CYCLEH, &esp_cpu_csr_ops);
 
     s->cc_machine = (ESPCPUCycleCounter) {
         .divider = 6250,   /* 6.25ns per instruction at 160MHz. */
@@ -463,6 +900,8 @@ static void esp_cpu_init(Object *obj)
 static Property riscv_harts_props[] = {
     DEFINE_PROP_UINT32("hartid-base", EspRISCVCPU, hartid_base, 0),
     DEFINE_PROP_BOOL("has-pma", EspRISCVCPU, has_pma, false),
+    DEFINE_PROP_BOOL("has-pmp32", EspRISCVCPU, has_pmp32, false),
+    DEFINE_PROP_BOOL("clic-ext-irq", EspRISCVCPU, clic_ext_irq, false),
     DEFINE_PROP_BOOL("mie-as-bitmap", EspRISCVCPU, mie_as_bitmap, false),
     DEFINE_PROP_END_OF_LIST(),
 };

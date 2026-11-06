@@ -32,7 +32,17 @@ typedef struct ESP32C3UARTClass {
     /* Virtual attributes/methods overriden */
     void (*parent_uart_write)(void *opaque, hwaddr addr, uint64_t value, unsigned int size);
     uint64_t (*parent_uart_read)(void *opaque, hwaddr addr, unsigned int size);
+
+    /* Offset of UART_RXD_CNT_REG on chips with the ESP32-C6 register layout, where it
+     * is past the ESP32 register block and AUTOBAUD_EN has moved in CONF0. Zero on the
+     * ESP32-C3 layout. */
+    hwaddr rxd_cnt_reg;
 } ESP32C3UARTClass;
+
+/* UART registers that differ on ESP32-C6 and newer chips */
+#define ESP32C6_UART_RXD_CNT_REG 0x84
+REG32(ESP32C6_UART_CONF0_SYNC, 0x20)
+    FIELD(ESP32C6_UART_CONF0_SYNC, AUTOBAUD_EN, 19, 1)
 
 
 /**

@@ -43,6 +43,8 @@ typedef struct {
     SysBusDevice parent;
     MemoryRegion iomem;
     uint64_t lp_timer_counter;
+    /* LP_AON_STORE0..9: retained general-purpose registers. IDF keeps the boot time and the slow clock calibration here. */
+    uint32_t aon_store[10];
     ESP32C6ResetReason reset_reason;
     qemu_irq cpu_reset;
 } ESP32C6LpState;

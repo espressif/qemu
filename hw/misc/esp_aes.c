@@ -208,6 +208,151 @@ close_exit:
     gcry_cipher_close(ghandle);
 }
 
+/* Encrypts whole blocks in place with the key of this operation. GCM never uses the AES decrypt direction. */
+static bool esp_aes_gcm_ecb(ESPAesState *s, uint8_t *blocks, size_t len)
+{
+    const uint32_t mode = FIELD_EX32(s->mode_reg, AES_MODE_REG, AES_MODE);
+    const bool is_128 = mode == ESP_AES_MODE_128_ENC || mode == ESP_AES_MODE_128_DEC;
+    gcry_cipher_hd_t handle;
+    gcry_error_t err;
+
+    err = gcry_cipher_open(&handle, is_128 ? GCRY_CIPHER_AES128 : GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_ECB, 0);
+    if (err) {
+        error_report("[AES] error 0x%x when opening cipher", err);
+        return false;
+    }
+    err = gcry_cipher_setkey(handle, s->key, is_128 ? 16 : 32);
+    if (!err) {
+        err = gcry_cipher_encrypt(handle, blocks, len, NULL, 0);
+    }
+    gcry_cipher_close(handle);
+    return err == 0;
+}
+
+/* Multiplies y by the hash key in GF(2^128) after adding a block, as GHASH defines. */
+static void esp_aes_ghash_block(uint8_t *y, const uint8_t *h, const uint8_t *block)
+{
+    uint64_t vh = ldq_be_p(h), vl = ldq_be_p(h + 8);
+    uint64_t zh = 0, zl = 0;
+
+    for (int i = 0; i < ESP_AES_BLOCK_SIZE; i++) {
+        y[i] ^= block[i];
+    }
+    for (int i = 0; i < 128; i++) {
+        if (y[i / 8] & (0x80 >> (i % 8))) {
+            zh ^= vh;
+            zl ^= vl;
+        }
+        const bool lsb = vl & 1;
+        vl = (vl >> 1) | (vh << 63);
+        vh >>= 1;
+        if (lsb) {
+            vh ^= 0xE100000000000000ULL;
+        }
+    }
+    stq_be_p(y, zh);
+    stq_be_p(y + 8, zl);
+}
+
+static void esp_aes_gcm_done(ESPAesState *s)
+{
+    s->state_reg = ESP_AES_DONE;
+    if (s->int_ena_reg) {
+        qemu_irq_raise(s->irq);
+    }
+}
+
+/*
+ * Runs a GCM operation. The DMA input has the AAD blocks, the data blocks and the
+ * length block. The DMA output has only the data blocks. The guest pads a partial
+ * last block with zeros, and REMAINDER_BIT_NUM gives its size.
+ */
+static void esp_aes_gcm_continue(ESPAesState *s)
+{
+    const uint32_t mode = FIELD_EX32(s->mode_reg, AES_MODE_REG, AES_MODE);
+    const bool encrypt = mode == ESP_AES_MODE_128_ENC || mode == ESP_AES_MODE_256_ENC;
+    const size_t aad_len = s->aad_block_num_reg * ESP_AES_BLOCK_SIZE;
+    const size_t data_len = s->block_num_reg * ESP_AES_BLOCK_SIZE;
+    const size_t total = aad_len + data_len + ESP_AES_BLOCK_SIZE;
+    const uint32_t remainder = s->remainder_bit_num_reg / 8;
+    uint8_t *input = g_malloc(total);
+    uint8_t *data = input + aad_len;
+    uint8_t *stream = g_malloc(data_len + ESP_AES_BLOCK_SIZE);
+    uint8_t y[ESP_AES_BLOCK_SIZE] = { 0 };
+    uint32_t out_chan, in_chan;
+
+    if (!esp_gdma_get_channel_periph(s->gdma, GDMA_AES, ESP_GDMA_OUT_IDX, &out_chan) ||
+        !esp_gdma_get_channel_periph(s->gdma, GDMA_AES, ESP_GDMA_IN_IDX, &in_chan)) {
+        warn_report("[AES] GDMA requested but no properly configured channel found");
+        goto exit;
+    }
+    if (!esp_gdma_read_channel(s->gdma, out_chan, input, total)) {
+        warn_report("[AES] Error reading from GDMA buffer");
+        goto exit;
+    }
+
+    /* The stream starts with E(J0) for the tag, then E(inc32(J0)) and so on */
+    const uint32_t counter = ldl_be_p(s->gcm_j0 + 12);
+    for (size_t i = 0; i <= s->block_num_reg; i++) {
+        memcpy(stream + i * ESP_AES_BLOCK_SIZE, s->gcm_j0, 12);
+        stl_be_p(stream + i * ESP_AES_BLOCK_SIZE + 12, counter + i);
+    }
+    if (!esp_aes_gcm_ecb(s, stream, data_len + ESP_AES_BLOCK_SIZE)) {
+        goto exit;
+    }
+
+    for (size_t i = 0; i < aad_len; i += ESP_AES_BLOCK_SIZE) {
+        esp_aes_ghash_block(y, s->gcm_h, input + i);
+    }
+    for (size_t i = 0; i < data_len; i += ESP_AES_BLOCK_SIZE) {
+        uint8_t ciphertext[ESP_AES_BLOCK_SIZE];
+
+        for (int j = 0; j < ESP_AES_BLOCK_SIZE; j++) {
+            const uint8_t in = data[i + j];
+            data[i + j] = in ^ stream[ESP_AES_BLOCK_SIZE + i + j];
+            ciphertext[j] = encrypt ? data[i + j] : in;
+        }
+        if (remainder && i + ESP_AES_BLOCK_SIZE == data_len) {
+            memset(ciphertext + remainder, 0, ESP_AES_BLOCK_SIZE - remainder);
+        }
+        esp_aes_ghash_block(y, s->gcm_h, ciphertext);
+    }
+    esp_aes_ghash_block(y, s->gcm_h, data + data_len);
+    for (int j = 0; j < ESP_AES_BLOCK_SIZE; j++) {
+        s->gcm_t0[j] = y[j] ^ stream[j];
+    }
+
+    if (data_len && !esp_gdma_write_channel(s->gdma, in_chan, data, data_len)) {
+        warn_report("[AES] Error writing to GDMA buffer");
+        goto exit;
+    }
+    esp_aes_gcm_done(s);
+
+exit:
+    g_free(stream);
+    g_free(input);
+}
+
+/* Returns the GCM memory register at addr, or NULL if this chip has none there. */
+static uint32_t *esp_aes_gcm_reg(ESPAesState *s, hwaddr addr)
+{
+    if (!ESP_AES_GET_CLASS(s)->gcm || (addr & 3)) {
+        return NULL;
+    }
+    if (addr >= A_AES_H_MEM && addr < A_AES_H_MEM + ESP_AES_BLOCK_SIZE) {
+        return (uint32_t *)(s->gcm_h + addr - A_AES_H_MEM);
+    } else if (addr >= A_AES_J0_MEM && addr < A_AES_J0_MEM + ESP_AES_BLOCK_SIZE) {
+        return (uint32_t *)(s->gcm_j0 + addr - A_AES_J0_MEM);
+    } else if (addr >= A_AES_T0_MEM && addr < A_AES_T0_MEM + ESP_AES_BLOCK_SIZE) {
+        return (uint32_t *)(s->gcm_t0 + addr - A_AES_T0_MEM);
+    } else if (addr == A_AES_AAD_BLOCK_NUM_REG) {
+        return &s->aad_block_num_reg;
+    } else if (addr == A_AES_REMAINDER_BIT_NUM_REG) {
+        return &s->remainder_bit_num_reg;
+    }
+    return NULL;
+}
+
 static void aes_block_start(ESPAesState *s, const uint32_t *key, const uint32_t *text_in, uint32_t *text_out, const uint32_t mode_reg)
 {
     AES_KEY aes_key_handle;
@@ -241,10 +386,15 @@ static uint64_t esp_aes_read(void *opaque, hwaddr addr, unsigned int size)
 {
     ESPAesState *s = ESP_AES(opaque);
     uint64_t r = 0;
+    uint32_t *gcm_reg = esp_aes_gcm_reg(s, addr);
 
     /* At the moment, make the assumption that we always write a 32-bit word, except for IV memory */
     assert((addr >= A_AES_IV_MEM_0_REG && addr <= A_AES_IV_MEM_15_REG) ||
             size == sizeof(uint32_t));
+
+    if (gcm_reg) {
+        return *gcm_reg;
+    }
 
     switch (addr) {
     case A_AES_KEY_0_REG ... A_AES_KEY_7_REG:
@@ -320,10 +470,16 @@ static void esp_aes_write(void *opaque, hwaddr addr,
     ESPAesClass *class = ESP_AES_GET_CLASS(opaque);
     ESPAesState *s = ESP_AES(opaque);
     uint32_t offset = 0;
+    uint32_t *gcm_reg = esp_aes_gcm_reg(s, addr);
 
     /* At the moment, make the assumption that we always write a 32-bit word, except for IV memory */
     assert((addr >= A_AES_IV_MEM_0_REG && addr <= A_AES_IV_MEM_15_REG) ||
             size == sizeof(uint32_t));
+
+    if (gcm_reg) {
+        *gcm_reg = value;
+        return;
+    }
 
     switch (addr) {
     case A_AES_KEY_0_REG ... A_AES_KEY_7_REG:
@@ -351,7 +507,14 @@ static void esp_aes_write(void *opaque, hwaddr addr,
         if (FIELD_EX32(value, AES_TRIGGER_REG, AES_TRIGGER)) {
             /* DMA mode is different than "regular" mode */
             if (FIELD_EX32(s->dma_enable_reg , AES_DMA_ENA_REG, AES_DMA_ENA) != 0) {
-                esp_aes_dma_start(s);
+                if (class->gcm && FIELD_EX32(s->block_mode_reg, AES_BLK_MODE_REG, AES_BLOCK_MODE) == ESP_AES_GCM_CIPHER) {
+                    /* This trigger computes H. CONTINUE starts the transform. */
+                    memset(s->gcm_h, 0, sizeof(s->gcm_h));
+                    esp_aes_gcm_ecb(s, s->gcm_h, sizeof(s->gcm_h));
+                    s->state_reg = ESP_AES_IDLE;
+                } else {
+                    esp_aes_dma_start(s);
+                }
             } else {
                 class->aes_block_start(s, s->key, s->text_in, s->text_out, s->mode_reg);
             }
@@ -372,6 +535,12 @@ static void esp_aes_write(void *opaque, hwaddr addr,
 
     case A_AES_INC_SEL_REG:
         s->inc_sel_reg = value;
+        break;
+
+    case A_AES_CONTINUE_REG:
+        if (class->gcm && (value & 1)) {
+            esp_aes_gcm_continue(s);
+        }
         break;
 
     case A_AES_INT_CLR_REG:
@@ -422,6 +591,11 @@ static void esp_aes_reset_hold(Object *obj, ResetType type)
     s->block_num_reg = 0;
     s->inc_sel_reg = 0;
     s->int_ena_reg = 0;
+    memset(s->gcm_h, 0, sizeof(s->gcm_h));
+    memset(s->gcm_j0, 0, sizeof(s->gcm_j0));
+    memset(s->gcm_t0, 0, sizeof(s->gcm_t0));
+    s->aad_block_num_reg = 0;
+    s->remainder_bit_num_reg = 0;
 }
 
 static void esp_aes_realize(DeviceState *dev, Error **errp)

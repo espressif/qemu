@@ -1636,6 +1636,8 @@ static RISCVException write_mstatus(CPURISCVState *env, int csrno,
         mask |= (MSTATUS_MPELP | MSTATUS_SPELP);
     }
 
+    mask &= env->mstatus_warl_mask;
+
     mstatus = (mstatus & ~mask) | (val & mask);
 
     env->mstatus = mstatus;
@@ -2191,8 +2193,12 @@ static RISCVException read_mtvec(CPURISCVState *env, int csrno,
 static RISCVException write_mtvec(CPURISCVState *env, int csrno,
                                   target_ulong val)
 {
-    /* bits [1:0] encode mode; 0 = direct, 1 = vectored, 2 >= reserved */
-    if ((val & 3) < 2) {
+    /*
+     * bits [1:0] encode mode; 0 = direct, 1 = vectored, 2 >= reserved.
+     * Mode 3 is used by CLIC (e.g. ESP32-C5) for non-vectored CLIC base mode.
+     * Accept modes 0, 1, and 3.
+     */
+    if ((val & 3) < 2 || (val & 3) == 3) {
         env->mtvec = val;
     } else {
         qemu_log_mask(LOG_UNIMP, "CSR_MTVEC: reserved mode not supported\n");

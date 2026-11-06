@@ -17,6 +17,7 @@ static void esp32c6_uart_init(Object *obj)
 
 static void esp32c6_uart_class_init(ObjectClass *klass, void *data)
 {
+    ESP32C3_UART_CLASS(klass)->rxd_cnt_reg = ESP32C6_UART_RXD_CNT_REG;
 }
 
 static const TypeInfo esp32c6_uart_info = {

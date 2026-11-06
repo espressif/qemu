@@ -1,0 +1,305 @@
+/*
+ * ESP32-P4 LP (Low Power) domain controller emulation
+ *
+ * Absolute MMIO is mapped at ESP32P4_LP_BASE by the machine; this device
+ * uses relative offsets from that base.
+ *
+ * Copyright (c) 2026 Espressif Systems (Shanghai) Co. Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 or
+ * (at your option) any later version.
+ */
+
+#include "qemu/osdep.h"
+#include "qemu/module.h"
+#include "qemu/guest-random.h"
+#include "hw/sysbus.h"
+#include "hw/irq.h"
+#include "hw/misc/esp32p4_lp.h"
+
+/* LP_CLKRST is at +0x1000 from LP_BASE; RESET_CAUSE at +0x10 within it */
+#define LP_CLKRST_RESET_CAUSE_REG  0x1010
+
+/* LP_CLKRST_HPCPU_RESET_CTRL0 (+0x14 within LP_CLKRST) */
+#define LP_CLKRST_HPCPU_RESET_CTRL0_REG  0x1014
+#define LP_CLKRST_HPCORE0_SW_RESET       (1U << 13)
+#define LP_CLKRST_HPCORE1_SW_RESET       (1U << 29)
+
+/* LP_CLKRST_HP_CLK_CTRL (+0x40 within LP_CLKRST) */
+#define LP_CLKRST_HP_CLK_CTRL_REG        0x1040
+
+/* LP_SYSTEM_REG_SYS_CTRL */
+#define LP_SYS_CTRL_REG                  0x0008
+#define LP_SYS_CTRL_SYS_SW_RST           (1U << 1)
+
+/* LP_SYSTEM_REG_LP_STORE0..15 */
+#define LP_SYS_STORE0_REG                0x002C
+#define LP_SYS_STORE15_REG               0x0068
+
+/* LP_SYSTEM boot address for HP core1, written through ROM
+ * ets_set_appcpu_boot_addr() */
+#define LP_SYS_BOOT_ADDR_HP_CORE1_REG    0x0164
+
+/* PMU_CPU_SW_STALL at DR_REG_PMU_BASE (0x50115000) + 0x200 */
+#define PMU_CPU_SW_STALL_REG       0x5200
+#define PMU_HPCORE1_STALL_CODE_S   16
+#define PMU_STALL_CODE_STALLED     0x86
+
+/*
+ * LP_I2C_ANA_MST_I2C0_CTRL at DR_REG_LPPERIPH_BASE (0x50120000) + 0x4000. An
+ * access is one write of slave[7:0], register[15:8], data[23:16] and write[24];
+ * the data read back is in [23:16]. The analog blocks only store their registers.
+ */
+#define LP_I2C_ANA_MST_I2C0_CTRL_REG     0x14000
+#define LP_I2C_ANA_MST_WRITE             (1U << 24)
+
+#define REGI2C_CPLL_SLAVE                0x67
+#define REGI2C_CPLL_REF_DIV_REG          2
+#define REGI2C_CPLL_REF_DIV_MASK         0xf
+#define REGI2C_CPLL_DIV_7_0_REG          3
+
+/* LP_TRNG at DR_REG_LP_TRNG_BASE (0x50126000) → relative 0x16000 */
+#define LP_TRNG_DATA_REG           0x16000
+#define LP_TRNG_DATA_REG_HI        0x16004
+
+/*
+ * LPPERI registers whose reset value is non-zero. LPPERI_CLK_EN_REG in
+ * particular comes out of reset with every LP peripheral clock enabled;
+ * regi2c asserts on CK_EN_LP_I2CMST (bit 27) before touching I2C_ANA_MST.
+ */
+static const struct {
+    hwaddr offset;
+    uint32_t value;
+} lpperi_reset[] = {
+    { 0x000, 0x7FFF0000 },  /* CLK_EN */
+    { 0x00C, 0x80000000 },  /* CPU */
+    { 0x028, 0x80000000 },  /* MEM_CTRL */
+    { 0x02C, 0x04040400 },  /* ADC_CTRL */
+    { 0x030, 0x02000000 },  /* LP_I2S_RXCLK_DIV_NUM */
+    { 0x034, 0x00004000 },  /* LP_I2S_RXCLK_DIV_XYZ */
+    { 0x038, 0x02000000 },  /* LP_I2S_TXCLK_DIV_NUM */
+    { 0x03C, 0x00004000 },  /* LP_I2S_TXCLK_DIV_XYZ */
+};
+
+static void esp32p4_lp_reset_request(void *opaque, int n, int level)
+{
+    ESP32P4LpState *s = ESP32P4_LP(opaque);
+    assert(n < ESP32P4_RESET_REASON_MAX);
+    if (level) {
+        s->reset_reason = n;
+        qemu_irq_raise(s->cpu_reset);
+    }
+}
+
+uint32_t esp32p4_lp_cpll_freq_hz(ESP32P4LpState *s, uint32_t xtal_hz)
+{
+    const uint8_t *cpll = s->regi2c[REGI2C_CPLL_SLAVE - ESP32P4_REGI2C_FIRST_SLAVE];
+    const uint32_t ref_div = cpll[REGI2C_CPLL_REF_DIV_REG] & REGI2C_CPLL_REF_DIV_MASK;
+
+    return xtal_hz * cpll[REGI2C_CPLL_DIV_7_0_REG] / (ref_div + 1);
+}
+
+static void esp32p4_lp_regi2c_access(ESP32P4LpState *s, uint32_t value)
+{
+    const uint32_t slave = extract32(value, 0, 8);
+    const uint32_t reg = extract32(value, 8, 8);
+    uint32_t data = extract32(value, 16, 8);
+
+    if (slave >= ESP32P4_REGI2C_FIRST_SLAVE &&
+        slave < ESP32P4_REGI2C_FIRST_SLAVE + ESP32P4_REGI2C_SLAVES) {
+        uint8_t *byte = &s->regi2c[slave - ESP32P4_REGI2C_FIRST_SLAVE][reg];
+
+        if (value & LP_I2C_ANA_MST_WRITE) {
+            *byte = data;
+        } else {
+            data = *byte;
+        }
+    }
+    s->i2c0_ctrl = deposit32(value, 16, 8, data) & ~LP_I2C_ANA_MST_WRITE;
+}
+
+static uint64_t esp32p4_lp_read(void *opaque, hwaddr addr, unsigned int size)
+{
+    ESP32P4LpState *s = ESP32P4_LP(opaque);
+    uint64_t r = 0;
+
+    if (addr == LP_CLKRST_RESET_CAUSE_REG) {
+        uint32_t reason = s->reset_reason & 0x3f;
+        /*
+         * HPCORE1_RESET_CAUSE in bits[19:14], HPCORE0 in bits[12:7], LPCORE in
+         * bits[5:0]. Both HP cores come out of the same reset events we model,
+         * so they report the same cause; the ROM start-up code reads the field
+         * matching its own mhartid.
+         */
+        r = (reason << 14) | (reason << 7) | reason;
+        return r;
+    }
+
+    if (addr >= LP_SYS_STORE0_REG && addr <= LP_SYS_STORE15_REG) {
+        return s->store[(addr - LP_SYS_STORE0_REG) / 4];
+    }
+
+    if (addr == LP_CLKRST_HP_CLK_CTRL_REG) {
+        return s->hp_clk_ctrl;
+    }
+
+    if (addr == LP_I2C_ANA_MST_I2C0_CTRL_REG) {
+        return s->i2c0_ctrl;
+    }
+
+    if (addr == LP_SYS_BOOT_ADDR_HP_CORE1_REG) {
+        return s->core1_boot_addr;
+    }
+
+    if (addr == PMU_CPU_SW_STALL_REG) {
+        return s->cpu_sw_stall;
+    }
+
+    if (addr == LP_TRNG_DATA_REG || addr == LP_TRNG_DATA_REG_HI) {
+        uint32_t rng;
+        qemu_guest_getrandom_nofail(&rng, sizeof(rng));
+        return rng;
+    }
+
+    if (addr >= ESP32P4_LPPERI_OFFSET &&
+        addr < ESP32P4_LPPERI_OFFSET + ESP32P4_LPPERI_SIZE) {
+        return s->lpperi[(addr - ESP32P4_LPPERI_OFFSET) / 4];
+    }
+
+    return 0;
+}
+
+static void esp32p4_lp_write(void *opaque, hwaddr addr, uint64_t value,
+                             unsigned int size)
+{
+    ESP32P4LpState *s = ESP32P4_LP(opaque);
+
+    if (addr >= ESP32P4_LPPERI_OFFSET &&
+        addr < ESP32P4_LPPERI_OFFSET + ESP32P4_LPPERI_SIZE) {
+        s->lpperi[(addr - ESP32P4_LPPERI_OFFSET) / 4] = (uint32_t)value;
+        return;
+    }
+
+    if (addr >= LP_SYS_STORE0_REG && addr <= LP_SYS_STORE15_REG) {
+        s->store[(addr - LP_SYS_STORE0_REG) / 4] = (uint32_t)value;
+        return;
+    }
+
+    if (addr == LP_CLKRST_HP_CLK_CTRL_REG) {
+        s->hp_clk_ctrl = (uint32_t)value;
+        if (s->clk_changed) {
+            s->clk_changed(s->clk_changed_opaque);
+        }
+        return;
+    }
+
+    if (addr == LP_I2C_ANA_MST_I2C0_CTRL_REG) {
+        esp32p4_lp_regi2c_access(s, value);
+        return;
+    }
+
+    if (addr == LP_SYS_CTRL_REG) {
+        if (value & LP_SYS_CTRL_SYS_SW_RST) {
+            esp32p4_lp_reset_request(opaque, ESP32P4_CORE_SW, 1);
+        }
+        return;
+    }
+
+    if (addr == LP_SYS_BOOT_ADDR_HP_CORE1_REG) {
+        s->core1_boot_addr = (uint32_t)value;
+        return;
+    }
+
+    if (addr == PMU_CPU_SW_STALL_REG) {
+        s->cpu_sw_stall = (uint32_t)value;
+        const uint8_t code = (s->cpu_sw_stall >> PMU_HPCORE1_STALL_CODE_S) & 0xff;
+        qemu_set_irq(s->core1_stall, code == PMU_STALL_CODE_STALLED);
+        return;
+    }
+
+    if (addr == LP_CLKRST_HPCPU_RESET_CTRL0_REG) {
+        /* The SW_RESET bits are write-to-trigger and do not latch */
+        if (value & LP_CLKRST_HPCORE1_SW_RESET) {
+            qemu_irq_pulse(s->core1_sw_reset);
+        }
+        if (value & LP_CLKRST_HPCORE0_SW_RESET) {
+            esp32p4_lp_reset_request(opaque, ESP32P4_CPU_SW, 1);
+        }
+        return;
+    }
+}
+
+static const MemoryRegionOps esp32p4_lp_ops = {
+    .read  = esp32p4_lp_read,
+    .write = esp32p4_lp_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+static void esp32p4_lp_reset_hold(Object *obj, ResetType type)
+{
+    static bool first_boot = true;
+    ESP32P4LpState *s = ESP32P4_LP(obj);
+
+    if (first_boot) {
+        s->reset_reason = ESP32P4_CHIP_POWER_ON;
+        first_boot = false;
+    }
+
+    memset(s->lpperi, 0, sizeof(s->lpperi));
+    for (size_t i = 0; i < ARRAY_SIZE(lpperi_reset); i++) {
+        s->lpperi[lpperi_reset[i].offset / 4] = lpperi_reset[i].value;
+    }
+
+    s->core1_boot_addr = 0;
+    s->cpu_sw_stall = 0;
+    s->hp_clk_ctrl = 0;
+    s->i2c0_ctrl = 0;
+    memset(s->regi2c, 0, sizeof(s->regi2c));
+    if (s->clk_changed) {
+        s->clk_changed(s->clk_changed_opaque);
+    }
+
+    qemu_irq_lower(s->cpu_reset);
+    qemu_irq_lower(s->core1_stall);
+}
+
+static void esp32p4_lp_init(Object *obj)
+{
+    ESP32P4LpState *s = ESP32P4_LP(obj);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+
+    memory_region_init_io(&s->iomem, obj, &esp32p4_lp_ops, s,
+                          TYPE_ESP32P4_LP, ESP32P4_LP_IO_SIZE);
+
+    sysbus_init_mmio(sbd, &s->iomem);
+    qdev_init_gpio_in(DEVICE(s), esp32p4_lp_reset_request, ESP32P4_RESET_REASON_MAX);
+    qdev_init_gpio_out_named(DEVICE(s), &s->cpu_reset, ESP32P4_LP_RESET_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(s), &s->core1_stall,
+                             ESP32P4_LP_CORE1_STALL_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(s), &s->core1_sw_reset,
+                             ESP32P4_LP_CORE1_SW_RESET_GPIO, 1);
+
+    s->reset_reason = ESP32P4_CHIP_POWER_ON;
+}
+
+static void esp32p4_lp_class_init(ObjectClass *klass, void *data)
+{
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
+    rc->phases.hold = esp32p4_lp_reset_hold;
+}
+
+static const TypeInfo esp32p4_lp_info = {
+    .name = TYPE_ESP32P4_LP,
+    .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(ESP32P4LpState),
+    .instance_init = esp32p4_lp_init,
+    .class_init = esp32p4_lp_class_init,
+};
+
+static void esp32p4_lp_register_types(void)
+{
+    type_register_static(&esp32p4_lp_info);
+}
+
+type_init(esp32p4_lp_register_types)

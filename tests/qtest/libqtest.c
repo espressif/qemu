@@ -1704,7 +1704,6 @@ bool qtest_has_device(const char *device)
     QObject *qobj;
     QString *qstr;
     QDict *devinfo;
-    int idx;
 
     if (!list) {
         QDict *resp;
@@ -1725,7 +1724,7 @@ bool qtest_has_device(const char *device)
         qtest_quit(qts);
     }
 
-    for (p = qlist_first(list), idx = 0; p; p = qlist_next(p), idx++) {
+    for (p = qlist_first(list); p; p = qlist_next(p)) {
         devinfo = qobject_to(QDict, qlist_entry_obj(p));
         g_assert(devinfo);
 

@@ -28,6 +28,11 @@ static uint64_t esp32c3_uart_read(void *opaque, hwaddr addr, unsigned int size)
     ESP32C3UARTState *s = ESP32C3_UART(opaque);
     uint32_t r = 0;
 
+    if (addr >= UART_REG_CNT * sizeof(uint32_t)) {
+        /* The ROM polls this register for the edge count while it detects the baud rate */
+        return addr == class->rxd_cnt_reg ? s->parent.reg[R_UART_RXD_CNT] : 0;
+    }
+
     switch (addr)
     {
     case A_ESP32C3_UART_CONF1:
@@ -50,6 +55,10 @@ static void esp32c3_uart_write(void *opaque, hwaddr addr,
     ESP32C3UARTState *s = ESP32C3_UART(opaque);
     uint32_t autobaud = 0;
 
+    if (addr >= UART_REG_CNT * sizeof(uint32_t)) {
+        return;
+    }
+
     /* UART_RXD_CNT_REG register is not at the same address on the ESP32 and ESP32-C3, so make the
      * the translation here. */
     switch (addr) {
@@ -57,7 +66,8 @@ static void esp32c3_uart_write(void *opaque, hwaddr addr,
         case A_ESP32C3_UART_CONF0:
             /* On the C3, AUTOBAUD is part of CONF0 register, but on the ESP32, it has its own
              * register, poke that register instead */
-            autobaud = FIELD_EX32(value, ESP32C3_UART_CONF0, AUTOBAUD_EN) ? 1 : 0;
+            autobaud = class->rxd_cnt_reg ? FIELD_EX32(value, ESP32C6_UART_CONF0_SYNC, AUTOBAUD_EN)
+                                          : FIELD_EX32(value, ESP32C3_UART_CONF0, AUTOBAUD_EN);
             class->parent_uart_write(opaque, ESP32_UART_AUTOBAUD, autobaud, sizeof(uint32_t));
             class->parent_uart_write(opaque, addr, value, size);
             break;
@@ -99,6 +109,12 @@ static void esp32c3_uart_init(Object *obj)
 {
     /* No need to call parent's class function, this is done automatically by the QOM, even before
      * calling the current function. */
+    ESP32C3UARTClass *class = ESP32C3_UART_GET_CLASS(obj);
+    ESP32UARTState *s = ESP32_UART(obj);
+
+    if (class->rxd_cnt_reg) {
+        memory_region_set_size(&s->iomem, class->rxd_cnt_reg + sizeof(uint32_t));
+    }
 }
 
 

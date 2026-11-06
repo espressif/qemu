@@ -129,6 +129,8 @@ typedef struct ESPGdmaClass {
 
     /* All the attributes and method that are common to all instances must be stored here */
     size_t m_channel_count;
+    /* Base of the internal RAM that descriptor addresses are relative to */
+    uint32_t ram_addr;
 
     /* Virtual methods */
     /**
@@ -136,6 +138,11 @@ typedef struct ESPGdmaClass {
      *        If NULL, all the peripherals are considered valid.
      */
     bool (*is_periph_invalid)(ESPGdmaState *s, GdmaPeripheral per);
+    /**
+     * @brief Returns the PERI_SEL value of the given peripheral on this chip.
+     *        If NULL, it is the value of the GdmaPeripheral enumeration.
+     */
+    uint32_t (*periph_sel)(GdmaPeripheral per);
 } ESPGdmaClass;
 
 

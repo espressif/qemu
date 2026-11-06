@@ -15,11 +15,42 @@ riscv_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
         'esp32c3_intmatrix.c',
         'esp32c3.c',
 ))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32C5', if_true: files(
+        'esp32c3_clk.c',
+        'esp32c5_clk.c',
+        'esp32c5.c',
+        'esp32c5_intmatrix.c',
+))
 riscv_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files(
         'esp32c3_clk.c',
         'esp32c6_clk.c',
         'esp32c6.c',
         'esp32c6_intmatrix.c',
+))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files(
+        'esp32c3_clk.c',
+        'esp32c61_clk.c',
+        'esp32c61.c',
+        'esp32c61_intmatrix.c',
+))
+
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32H4', if_true: files(
+        'esp32c3_clk.c',
+        'esp32h4_clk.c',
+        'esp32h4.c',
+        'esp32h4_intmatrix.c',
+))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32P4', if_true: files(
+        'esp32c3_clk.c',
+        'esp32p4_clk.c',
+        'esp32p4.c',
+        'esp32p4_intmatrix.c',
+))
+riscv_ss.add(when: 'CONFIG_RISCV_ESP32H2', if_true: files(
+        'esp32c3_clk.c',
+        'esp32h2_clk.c',
+        'esp32h2.c',
+        'esp32h2_intmatrix.c',
 ))
 riscv_ss.add(when: 'CONFIG_RISCV_IOMMU', if_true: files('riscv-iommu.c', 'riscv-iommu-pci.c'))
 

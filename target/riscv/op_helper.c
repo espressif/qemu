@@ -353,6 +353,10 @@ target_ulong helper_mret(CPURISCVState *env)
     }
     env->mstatus = mstatus;
 
+    if (env->mret_hook) {
+        env->mret_hook(env);
+    }
+
     if (riscv_has_ext(env, RVH) && prev_virt) {
         riscv_cpu_swap_hypervisor_regs(env);
     }

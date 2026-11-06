@@ -49,6 +49,10 @@ typedef struct ESP32C3SpiTransaction {
     uint32_t addr;
     uint32_t addr_bytes;
 
+    /* Flash mode bits, sent between the address and the dummy phase */
+    uint32_t mode;
+    uint32_t mode_bytes;
+
     uint32_t dummy_bytes;
 
     void* data;
@@ -157,6 +161,7 @@ static void esp32c3_spi_perform_transaction(ESP32C3SpiState *s, ESP32C3SpiTransa
     qemu_set_irq(s->cs_gpio[0], 0);
     esp32c3_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, NULL, 0);
     esp32c3_spi_txrx_buffer(s, &t->addr, t->addr_bytes, NULL, 0);
+    esp32c3_spi_txrx_buffer(s, &t->mode, t->mode_bytes, NULL, 0);
     esp32c3_spi_dummy_cycles(s, t->dummy_bytes);
     esp32c3_spi_txrx_buffer(s, t->data, t->tx_bytes, t->data, t->rx_bytes);
     qemu_set_irq(s->cs_gpio[0], 1);
@@ -165,13 +170,16 @@ static void esp32c3_spi_perform_transaction(ESP32C3SpiState *s, ESP32C3SpiTransa
 
 static inline void esp32c3_spi_get_addr(ESP32C3SpiState *s, uint32_t* addr, uint32_t* len)
 {
-    const uint32_t address = FIELD_EX32(s->mem_addr, SPI_MEM_ADDR, USR_ADDR_VALUE);
+    uint32_t address = FIELD_EX32(s->mem_addr, SPI_MEM_ADDR, USR_ADDR_VALUE);
+    const uint32_t address_len = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_ADDR_BITLEN);
+    *len = (address_len + 1) / 8;
+
+    if (s->addr_phase_has_wb_mode && *len == 4) {
+        address = (address << 8) | FIELD_EX32(s->mem_rd_st, SPI_MEM_RD_STATUS, WB_MODE);
+    }
     /* SPI Flash expects the address to be sent with MSB first. We make the assumption that
      * the host computer uses a little-endian CPU. */
     *addr = bswap32(address);
-
-    const uint32_t address_len = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_ADDR_BITLEN);
-    *len = (address_len + 1) / 8;
 }
 
 static inline void esp32c3_spi_get_dummy(ESP32C3SpiState *s, uint32_t* len)
@@ -220,6 +228,11 @@ static void esp32c3_spi_begin_transaction(ESP32C3SpiState *s)
         esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes);
         if (t.addr_bytes > 0 && t.addr_bytes <= 4) {
             t.addr = t.addr >> (32 - t.addr_bytes * 8);
+        }
+
+        if (FIELD_EX32(s->mem_rd_st, SPI_MEM_RD_STATUS, WB_MODE_EN)) {
+            t.mode = FIELD_EX32(s->mem_rd_st, SPI_MEM_RD_STATUS, WB_MODE);
+            t.mode_bytes = (FIELD_EX32(s->mem_rd_st, SPI_MEM_RD_STATUS, WB_MODE_BITLEN) + 1) / 8;
         }
 
         /* Only calculate and include dummy cycles when the USR_DUMMY bit is set! */
