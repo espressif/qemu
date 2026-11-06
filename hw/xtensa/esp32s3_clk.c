@@ -61,6 +61,12 @@ static uint64_t esp32s3_clock_read(void *opaque, hwaddr addr, unsigned int size)
         case A_SYSTEM_SYSCLK_CONF:
             r = s->sysclk;
             break;
+        case A_SYSTEM_BT_LPCK_DIV_INT:
+            r = s->bt_lpck_div_int;
+            break;
+        case A_SYSTEM_BT_LPCK_DIV_FRAC:
+            r = s->bt_lpck_div_frac;
+            break;
         case A_SYSTEM_CPU_INTR_FROM_CPU_0:
         case A_SYSTEM_CPU_INTR_FROM_CPU_1:
         case A_SYSTEM_CPU_INTR_FROM_CPU_2:
@@ -97,6 +103,12 @@ static void esp32s3_clock_write(void *opaque, hwaddr addr, uint64_t value,
         case A_SYSTEM_EXTERNAL_DEVICE_ENCRYPT_DECRYPT_CONTROL:
             s->sys_ext_dev_enc_dec_ctrl = value;
             break;
+        case A_SYSTEM_BT_LPCK_DIV_INT:
+            s->bt_lpck_div_int = value & 0xFFF;   /* 12-bit divider */
+            break;
+        case A_SYSTEM_BT_LPCK_DIV_FRAC:
+            s->bt_lpck_div_frac = value & 0x1FFFFFFF;
+            break;
         default:
 #if CLOCK_WARNING
             warn_report("[CLOCK] Unsupported write to %08lx (%08lx)\n", addr, value);
@@ -123,6 +135,11 @@ static void esp32s3_clock_reset_hold(Object *obj, ResetType type)
     /* Divider for PLL clock and APB  frequency */
     s->cpuperconf = (ESP32S3_PERIOD_SEL_80 << R_SYSTEM_CPU_PER_CONF_CPUPERIOD_SEL_SHIFT) |
                     (ESP32S3_FREQ_SEL_PLL_480 << R_SYSTEM_CPU_PER_CONF_PLL_FREQ_SEL_SHIFT);
+
+    /* Bluetooth low-power clock at its reset values: divider 255, fractional
+     * divider 1/1, source the internal 8 MHz oscillator (TRM: 0xFF, 0x02001000). */
+    s->bt_lpck_div_int = 0xFF;
+    s->bt_lpck_div_frac = 0x02001000;
 
     /* Initialize the IRQs */
     s->levels = 0;
