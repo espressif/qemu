@@ -810,6 +810,8 @@ static void esp_gdma_write_chan_conf(ESPGdmaState *state, uint32_t dir, uint32_t
                 FIELD_EX32(s->conf0, GDMA_IN_CONF0, RST) != 0)
             {
                 esp_gdma_reset_fifo(s);
+                /* A start that no transfer consumed must not start the next memory-to-memory transfer */
+                s->link &= R_GDMA_OUT_LINK_ADDR_MASK;
             }
             /* Update the register before going further */
             s->conf0 = value;
