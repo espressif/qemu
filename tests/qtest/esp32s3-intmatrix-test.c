@@ -14,6 +14,7 @@
 #define INTMATRIX_CORE1_STATUS  0x600C298C
 #define UART0_SOURCE            27
 #define SHA_SOURCE              81
+#define TG1_WDT_LEVEL_SOURCE    55
 
 static uint32_t status(QTestState *qts, uint32_t base, int word)
 {
@@ -53,9 +54,26 @@ static void test_status(void)
     qtest_quit(qts);
 }
 
+static void test_system_reset(void)
+{
+    QTestState *qts = qtest_init("-machine esp32s3");
+
+    /* A system reset deasserts every source, also those without a reset */
+    set_source(qts, TG1_WDT_LEVEL_SOURCE, 1);
+    g_assert_cmphex(status(qts, INTMATRIX_CORE0_STATUS, 1), ==,
+                    BIT(TG1_WDT_LEVEL_SOURCE - 32));
+    qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmphex(status(qts, INTMATRIX_CORE0_STATUS, 1), ==, 0);
+    g_assert_cmphex(status(qts, INTMATRIX_CORE1_STATUS, 1), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/esp32s3/intmatrix/status", test_status);
+    qtest_add_func("/esp32s3/intmatrix/system_reset", test_system_reset);
     return g_test_run();
 }

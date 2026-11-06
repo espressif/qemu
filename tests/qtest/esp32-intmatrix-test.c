@@ -57,9 +57,26 @@ static void test_status(void)
     qtest_quit(qts);
 }
 
+static void test_system_reset(void)
+{
+    QTestState *qts = qtest_init("-machine esp32");
+
+    /* A system reset deasserts every source, also those without a reset */
+    set_source(qts, TG1_WDT_LEVEL_SOURCE, 1);
+    g_assert_cmphex(status(qts, DPORT_PRO_INTR_STATUS_0, 0), ==,
+                    BIT(TG1_WDT_LEVEL_SOURCE));
+    qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmphex(status(qts, DPORT_PRO_INTR_STATUS_0, 0), ==, 0);
+    g_assert_cmphex(status(qts, DPORT_APP_INTR_STATUS_0, 0), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/esp32/intmatrix/status", test_status);
+    qtest_add_func("/esp32/intmatrix/system_reset", test_system_reset);
     return g_test_run();
 }
