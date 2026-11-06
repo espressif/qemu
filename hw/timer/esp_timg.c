@@ -47,9 +47,10 @@ static int64_t esp_virtual_counter_update(ESPVirtualCounter *counter)
 {
     const int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     const int64_t elapsed_ns = now - counter->base;
-    const int64_t ticks = (elapsed_ns * (counter->frequency / 1000)) / 1000000;
+    const int64_t ticks = muldiv64(elapsed_ns, counter->frequency, NANOSECONDS_PER_SECOND);
     counter->value += ticks;
-    counter->base = now;
+    /* Keep the time of the tick in progress: reading faster than the counter ticks must not stop it */
+    counter->base += muldiv64(ticks, NANOSECONDS_PER_SECOND, counter->frequency);
     return counter->value;
 }
 
@@ -60,7 +61,8 @@ static inline QEMUTimer* esp_virtual_counter_get_timer(ESPVirtualCounter *counte
 
 static void esp_virtual_counter_alarm_in_ticks(ESPVirtualCounter *counter, int64_t ticks)
 {
-    int64_t delay_ns = (ticks * (1000000000UL / counter->frequency));
+    /* A deadline already passed gives negative ticks; muldiv64() takes them as unsigned */
+    int64_t delay_ns = muldiv64(MAX(ticks, 0), NANOSECONDS_PER_SECOND, counter->frequency);
     const int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     /* This function will reschedule the clock if it was already scheduled */
     counter->base = now;
