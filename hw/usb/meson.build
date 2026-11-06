@@ -87,6 +87,7 @@ if libusb.found()
   hw_usb_modules += {'host': usbhost_ss}
 endif
 
+system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32s3_usb_otg.c'))
 system_ss.add(when: ['CONFIG_USB', 'CONFIG_XEN_BUS', libusb], if_true: files('xen-usb.c'))
 
 modules += { 'hw-usb': hw_usb_modules }
