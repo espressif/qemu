@@ -212,18 +212,25 @@ static inline void esp32s3_spi_get_addr(ESP32S3SpiState *s, uint32_t* addr, uint
 
 static inline void esp32s3_spi_get_dummy(ESP32S3SpiState *s, uint32_t* len)
 {
-    const uint32_t dummy_count = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN);
+    /* The field holds the cycle count minus one (TRM: SPI_MEM_USR_DUMMY_CYCLELEN). */
+    const uint32_t cycles = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN) + 1;
 
-    /* Dummy cycles are interpreted as bytes by the emulated SPI Flash. As such, we shall convert
-     * our dummy cycles count in bytes, rounding it up. For example:
-     * 0 cycles = 0 byte
-     * 1 cycle = 1 byte
-     * ...
-     * 8 cycles = 1 byte
-     * 9 cycles = 2 bytes
-     * etc..
-     */
-    *len = (dummy_count + 7) / 8;
+    /* The emulated SPI flash counts the dummy phase in bytes, so the cycles have
+     * to be converted with the number of data lines they run on. In the quad and
+     * dual I/O read modes (FREAD_QIO, FREAD_DIO) the address and dummy phases
+     * use four or two lines, so a cycle carries four or two bits: the 6 dummy
+     * cycles of a quad I/O read (0xEB) are 24 bits, the 3 bytes an ISSI part
+     * expects before it starts returning data. Counting every cycle as one bit
+     * sent a single byte there, the flash then consumed the first two data
+     * clocks as dummies, and every byte the guest read back arrived two
+     * positions late. */
+    uint32_t lanes = 1;
+    if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_QIO)) {
+        lanes = 4;
+    } else if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_DIO)) {
+        lanes = 2;
+    }
+    *len = (cycles * lanes + 7) / 8;
 }
 
 static void esp32s3_spi_begin_transaction(ESP32S3SpiState *s)
