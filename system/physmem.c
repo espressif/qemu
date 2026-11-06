@@ -587,6 +587,11 @@ typedef struct TCGIOMMUNotifier {
     bool active;
 } TCGIOMMUNotifier;
 
+static void tcg_iommu_tlb_flush_async(CPUState *cpu, run_on_cpu_data data)
+{
+    tlb_flush(cpu);
+}
+
 static void tcg_iommu_unmap_notify(IOMMUNotifier *n, IOMMUTLBEntry *iotlb)
 {
     TCGIOMMUNotifier *notifier = container_of(n, TCGIOMMUNotifier, n);
@@ -594,7 +599,20 @@ static void tcg_iommu_unmap_notify(IOMMUNotifier *n, IOMMUTLBEntry *iotlb)
     if (!notifier->active) {
         return;
     }
-    tlb_flush(notifier->cpu);
+    /* tlb_flush() performs the flush on the calling thread, against the table
+     * of whichever CPU it is handed, so it is only safe for the CPU whose
+     * thread this is. There is one notifier per CPU and the notify arrives on
+     * whichever thread wrote the IOMMU's registers, so with a TCG thread per
+     * vCPU this would clear another CPU's table while that CPU is executing
+     * translated code that has already read an entry out of it. Leave the
+     * flush to the CPU that owns the table.
+     */
+    if (qemu_cpu_is_self(notifier->cpu)) {
+        tlb_flush(notifier->cpu);
+    } else {
+        async_run_on_cpu(notifier->cpu, tcg_iommu_tlb_flush_async,
+                         RUN_ON_CPU_NULL);
+    }
     notifier->active = false;
     /* We leave the notifier struct on the list to avoid reallocating it later.
      * Generally the number of IOMMUs a CPU deals with will be small.
