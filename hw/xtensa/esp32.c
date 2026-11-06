@@ -197,11 +197,14 @@ static void esp32_soc_reset(DeviceState *dev)
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
         remove_cpu_watchpoints(&s->cpu[0]);
         cpu_reset(CPU(&s->cpu[0]));
+        /* Silicon resets CPENABLE to 0xff; the Xtensa CPU reset leaves it at 0. */
+        s->cpu[0].env.sregs[CPENABLE] = 0xff;
     }
     if (s->requested_reset & ESP32_SOC_RESET_APPCPU) {
         xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
         remove_cpu_watchpoints(&s->cpu[1]);
         cpu_reset(CPU(&s->cpu[1]));
+        s->cpu[1].env.sregs[CPENABLE] = 0xff;
     }
     s->requested_reset = 0;
 }
