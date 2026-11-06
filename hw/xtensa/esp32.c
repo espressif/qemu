@@ -221,6 +221,10 @@ static void esp32_cpu_stall(void* opaque, int n, int level)
     }
 
     if (stall != s->cpu[n].env.runstall) {
+        if (!stall) {
+            /* A halt the core never got to take must not stop it again. */
+            cpu_reset_interrupt(CPU(&s->cpu[n]), CPU_INTERRUPT_HALT);
+        }
         xtensa_runstall(&s->cpu[n].env, stall);
     }
 }
