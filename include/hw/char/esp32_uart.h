@@ -59,6 +59,7 @@ REG32(UART_RXD_CNT, 0x30)
 
 /* TODO: implement */
 REG32(UART_CONF0, 0x20)
+    FIELD(UART_CONF0, RXFIFO_RST, 17, 1)
 REG32(UART_CONF1, 0x24)
     FIELD(UART_CONF1, TOUT_EN, 31, 1)
     FIELD(UART_CONF1, TOUT_THRD, 24, 7)
@@ -124,6 +125,8 @@ typedef struct ESPUARTClass {
     /* Virtual attributes/methods */
     void (*uart_write)(void *opaque, hwaddr addr, uint64_t value, unsigned int size);
     uint64_t (*uart_read)(void *opaque, hwaddr addr, unsigned int size);
+    /* Where this chip has RXFIFO_RST in CONF0 */
+    uint32_t rxfifo_rst_mask;
 } ESP32UARTClass;
 
 

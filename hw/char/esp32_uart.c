@@ -172,6 +172,15 @@ static void uart_write(void *opaque, hwaddr addr,
         s->reg[addr / 4] = value;
         break;
 
+    case A_UART_CONF0:
+        s->reg[addr / 4] = value;
+        if (value & ESP32_UART_GET_CLASS(s)->rxfifo_rst_mask) {
+            esp32_uart_rx_fifo_reset(s);
+            timer_del(&s->rx_timeout_timer);
+            qemu_chr_fe_accept_input(&s->chr);
+        }
+        break;
+
     case A_UART_CLKDIV: {
         s->reg[addr / 4] = value;
         unsigned clkdiv = (FIELD_EX32(s->reg[R_UART_CLKDIV], UART_CLKDIV, CLKDIV) << 4) +
@@ -418,6 +427,7 @@ static void esp32_uart_class_init(ObjectClass *klass, void *data)
     /* Populate the virtual attributes and methods here (if any) */
     class->uart_write = uart_write;
     class->uart_read = uart_read;
+    class->rxfifo_rst_mask = R_UART_CONF0_RXFIFO_RST_MASK;
 
     rc->phases.hold = esp32_uart_reset_hold;
     dc->realize = esp32_uart_realize;

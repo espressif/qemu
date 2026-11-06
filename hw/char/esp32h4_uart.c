@@ -14,6 +14,7 @@
 static void esp32h4_uart_class_init(ObjectClass *klass, void *data)
 {
     ESP32C3_UART_CLASS(klass)->rxd_cnt_reg = ESP32C6_UART_RXD_CNT_REG;
+    ESP32_UART_CLASS(klass)->rxfifo_rst_mask = R_ESP32C6_UART_CONF0_SYNC_RXFIFO_RST_MASK;
 }
 
 static const TypeInfo esp32h4_uart_info = {
