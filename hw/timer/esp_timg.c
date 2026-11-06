@@ -429,6 +429,21 @@ static void esp_t0_counter_load(ESPT0State* t)
     esp_t0_alarm_update(t);
 }
 
+static uint64_t esp_t0_frequency(ESPTimgState* s, uint32_t config)
+{
+    /* A divider of 0 means 65536, and a divider of 1 means 2 */
+    uint32_t divider = FIELD_EX32(config, TIMG_T0CONFIG, DIVIDER);
+    if (divider == 0) {
+        divider = 65536;
+    } else if (divider == 1) {
+        divider = 2;
+    }
+    const uint32_t xtal = s->xtal_freq ? s->xtal_freq : ESP_XTAL_CLK;
+    const uint64_t clk = FIELD_EX32(config, TIMG_T0CONFIG, USE_XTAL) ? xtal : ESP_APB_CLK;
+    return clk / divider;
+}
+
+
 static void esp_t0_config_update(ESPTimgState* s, ESPT0State* t0, uint32_t value)
 {
     const uint32_t former_conf = t0->config;
@@ -440,20 +455,12 @@ static void esp_t0_config_update(ESPTimgState* s, ESPT0State* t0, uint32_t value
         esp_t0_update_counter(t0);
     }
 
-    /* Calculate the new frequency, a divider of 0 means 65536 */
-    uint32_t new_divider = FIELD_EX32(value, TIMG_T0CONFIG, DIVIDER);
-    if (new_divider == 0) {
-        new_divider = 65536;
-    }
-    const uint32_t xtal = s->xtal_freq ? s->xtal_freq : ESP_XTAL_CLK;
-    const uint64_t new_clk = FIELD_EX32(value, TIMG_T0CONFIG, USE_XTAL) ? xtal : ESP_APB_CLK;
-    const uint64_t new_freq = new_clk / new_divider;
-    if (new_freq != t0->counter.frequency) {
-        t0->counter.frequency = new_freq;
-    }
+    /* Calculate the new frequency */
+    t0->counter.frequency = esp_t0_frequency(s, value);
 
+    /* This resets the prescaler only: the tick in progress restarts, the counter keeps its value */
     if (value & R_TIMG_T0CONFIG_DIVCNT_RST_MASK) {
-        esp_virtual_counter_reset(&t0->counter);
+        esp_virtual_counter_reenabled(&t0->counter);
         esp_t0_alarm_update(t0);
     }
 
@@ -791,15 +798,18 @@ static void esp_timg_reset_hold(Object *obj, ResetType type)
     s->t0.raw_st = 0;
     s->t0.int_enabled = 0;
     s->t0.value_rel = 0;
-    /* Set the divider to 1 */
-    s->t0.config = 1 << R_TIMG_T0CONFIG_DIVIDER_SHIFT;
+    /* Counting up, with auto-reload and a divider of 1 */
+    s->t0.config = R_TIMG_T0CONFIG_INCREASE_MASK | R_TIMG_T0CONFIG_AUTORELOAD_MASK |
+                   (1 << R_TIMG_T0CONFIG_DIVIDER_SHIFT);
+    s->t0.counter.frequency = esp_t0_frequency(s, s->t0.config);
 
     /* Reset Timer1 even if the target doesn't have T1 */
     esp_virtual_counter_reset(&s->t1.counter);
     s->t1.raw_st = 0;
     s->t1.int_enabled = 0;
     s->t1.value_rel = 0;
-    s->t1.config = 1 << R_TIMG_T0CONFIG_DIVIDER_SHIFT;
+    s->t1.config = s->t0.config;
+    s->t1.counter.frequency = s->t0.counter.frequency;
 }
 
 
