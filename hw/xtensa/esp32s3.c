@@ -542,10 +542,10 @@ static void esp32s3_soc_init(Object *obj)
 
     object_property_add_alias(obj, "serial0", OBJECT(&s->uart[0]), "chardev");
     object_property_add_alias(obj, "serial1", OBJECT(&s->uart[1]), "chardev");
-    // object_property_add_alias(obj, "serial2", OBJECT(&s->uart[2]), "chardev");
+    object_property_add_alias(obj, "serial2", OBJECT(&s->uart[2]), "chardev");
     qdev_prop_set_chr(DEVICE(&s->uart[0]), "chardev", serial_hd(0));
     qdev_prop_set_chr(DEVICE(&s->uart[1]), "chardev", serial_hd(1));
-    // qdev_prop_set_chr(DEVICE(&s->uart[2]), "chardev", serial_hd(2));
+    qdev_prop_set_chr(DEVICE(&s->uart[2]), "chardev", serial_hd(2));
 
     object_initialize_child(obj, "intmatrix", &s->intmatrix, TYPE_ESP32S3_INTMATRIX);
 
