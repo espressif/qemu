@@ -184,18 +184,21 @@ static inline void esp32c3_spi_get_addr(ESP32C3SpiState *s, uint32_t* addr, uint
 
 static inline void esp32c3_spi_get_dummy(ESP32C3SpiState *s, uint32_t* len)
 {
-    const uint32_t dummy_count = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN);
+    /* The field holds the cycle count minus one */
+    const uint32_t field = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN);
 
-    /* Dummy cycles are interpreted as bytes by the emulated SPI Flash. As such, we shall convert
-     * our dummy cycles count in bytes, rounding it up. For example:
-     * 0 cycles = 0 byte
-     * 1 cycle = 1 byte
-     * ...
-     * 8 cycles = 1 byte
-     * 9 cycles = 2 bytes
-     * etc..
-     */
-    *len = (dummy_count + 7) / 8;
+    /* The emulated devices count this phase in bytes. In a DIO or QIO read a
+     * cycle carries 2 or 4 bits. Round down: IDF adds cycles to compensate for
+     * input delay, which the flash does not see as data. */
+    if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_QIO)) {
+        *len = (field + 1) * 4 / 8;
+    } else if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_DIO)) {
+        *len = (field + 1) * 2 / 8;
+    } else {
+        /* 8 cycles, with or without one added for input delay, are 1 byte.
+         * The 18 cycles of an octal PSRAM read are the 3 bytes the model expects. */
+        *len = (field + 7) / 8;
+    }
 }
 
 static void esp32c3_spi_begin_transaction(ESP32C3SpiState *s)
