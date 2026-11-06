@@ -18,6 +18,7 @@
 #include "hw/qdev-properties-system.h"
 #include "hw/registerfields.h"
 #include "hw/boards.h"
+#include "hw/core/cpu.h"
 #include "hw/misc/esp32_reg.h"
 #include "hw/misc/esp32_dport.h"
 
@@ -265,8 +266,10 @@ static void esp32_cache_data_sync(Esp32CacheRegionState* crs)
             }
         }
         crs->mmu_table[i] &= ~ESP32_CACHE_MMU_ENTRY_CHANGED;
+        /* Only this page changed: drop the code translated from it */
+        memory_region_flush_rom_device(&crs->mem, i * ESP32_CACHE_PAGE_SIZE,
+                                       ESP32_CACHE_PAGE_SIZE);
     }
-    memory_region_flush_rom_device(&crs->mem, 0, ESP32_CACHE_REGION_SIZE);
 }
 
 static void esp32_cache_invalidate_all_entries(Esp32CacheRegionState* crs)
@@ -276,28 +279,68 @@ static void esp32_cache_invalidate_all_entries(Esp32CacheRegionState* crs)
     }
 }
 
+static AddressSpace *esp32_cache_cpu_as(Esp32CacheRegionState *crs)
+{
+    return cpu_get_address_space(qemu_get_cpu(crs->cache->core_id), 0);
+}
+
+/*
+ * Runs on the CPU owning the cache: drops its TLB entries for the region.
+ * UNMAP only, no MAP: TCG is the only current consumer of this CPU-private
+ * IOMMU, and it re-translates lazily.
+ */
+static void esp32_cache_region_flush_tlb(CPUState *cpu, run_on_cpu_data data)
+{
+    Esp32CacheRegionState *crs = data.host_ptr;
+    IOMMUTLBEvent event = {
+        .type = IOMMU_NOTIFIER_UNMAP,
+        .entry = {
+            .target_as = esp32_cache_cpu_as(crs),
+            .addr_mask = ESP32_CACHE_REGION_SIZE - 1,
+            .perm = IOMMU_NONE,
+        },
+    };
+    memory_region_notify_iommu(&crs->iommu, 0, event);
+}
+
+/*
+ * Point a cache region at its contents or at the illegal-access trap.
+ * ESP-IDF turns the cache off and on around every SPI flash operation, so
+ * this must not change the memory topology: only the IOMMU's answer changes.
+ * The TLB flush is queued to the owning CPU, like the one QEMU queues after a
+ * topology change, because the other core may have written the register.
+ */
+static void esp32_cache_region_set_enabled(Esp32CacheRegionState *crs,
+                                           bool enabled)
+{
+    if (qatomic_read(&crs->enabled) == enabled) {
+        return;
+    }
+    if (enabled && crs->type != ESP32_DCACHE_PSRAM) {
+        esp32_cache_data_sync(crs);
+    }
+    /* Read by the owning CPU's thread in translate(), without the BQL */
+    qatomic_store_release(&crs->enabled, enabled);
+    async_run_on_cpu(qemu_get_cpu(crs->cache->core_id),
+                     esp32_cache_region_flush_tlb, RUN_ON_CPU_HOST_PTR(crs));
+}
+
 static void esp32_cache_state_update(Esp32CacheState* cs)
 {
     bool cache_enabled = FIELD_EX32(cs->cache_ctrl_reg, DPORT_PRO_CACHE_CTRL, CACHE_ENA) != 0;
 
     bool drom0_enabled = cache_enabled &&
         FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0;
-    if (!cs->drom0.mem.enabled && drom0_enabled) {
-        esp32_cache_data_sync(&cs->drom0);
-    }
-    memory_region_set_enabled(&cs->drom0.mem, drom0_enabled);
+    esp32_cache_region_set_enabled(&cs->drom0, drom0_enabled);
 
     bool iram0_enabled = cache_enabled &&
         FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0;
-    if (!cs->iram0.mem.enabled && iram0_enabled) {
-        esp32_cache_data_sync(&cs->iram0);
-    }
-    memory_region_set_enabled(&cs->iram0.mem, iram0_enabled);
+    esp32_cache_region_set_enabled(&cs->iram0, iram0_enabled);
 
     if (cs->dport->has_psram) {
         bool dram1_enabled = cache_enabled &&
             FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DRAM1) == 0;
-        memory_region_set_enabled(&cs->dram1.mem, dram1_enabled);
+        esp32_cache_region_set_enabled(&cs->dram1, dram1_enabled);
     }
 }
 
@@ -412,6 +455,52 @@ static void esp32_cache_init_region(Esp32DportState *ds,
     memory_region_init_io(&crs->illegal_access_trap_mem, OBJECT(cs->dport),
                           &esp32_cache_ill_trap_ops, crs,
                           desc, ESP32_CACHE_REGION_SIZE);
+
+    /* Like the MemoryRegion it replaces, a region starts out enabled */
+    crs->enabled = true;
+    snprintf(desc, sizeof(desc), "cpu%d-%s-iommu", cs->core_id, name);
+    memory_region_init_iommu(&crs->iommu, sizeof(crs->iommu),
+                             TYPE_ESP32_CACHE_IOMMU, OBJECT(cs->dport),
+                             desc, ESP32_CACHE_REGION_SIZE);
+}
+
+void esp32_dport_map_cache_region(Esp32CacheRegionState *crs,
+                                  MemoryRegion *cpu_mem)
+{
+    memory_region_add_subregion(cpu_mem, ESP32_CACHE_DATA_WINDOW + crs->base,
+                                &crs->mem);
+    memory_region_add_subregion(cpu_mem, ESP32_CACHE_TRAP_WINDOW + crs->base,
+                                &crs->illegal_access_trap_mem);
+    memory_region_add_subregion_overlap(cpu_mem, crs->base,
+                                        MEMORY_REGION(&crs->iommu), -1);
+}
+
+static IOMMUTLBEntry esp32_cache_iommu_translate(IOMMUMemoryRegion *iommu,
+                                                 hwaddr addr,
+                                                 IOMMUAccessFlags flag,
+                                                 int iommu_idx)
+{
+    Esp32CacheRegionState *crs =
+        container_of(iommu, Esp32CacheRegionState, iommu);
+    const hwaddr mask = ESP32_CACHE_PAGE_SIZE - 1;
+    const hwaddr window = qatomic_load_acquire(&crs->enabled)
+                          ? ESP32_CACHE_DATA_WINDOW
+                          : ESP32_CACHE_TRAP_WINDOW;
+
+    return (IOMMUTLBEntry) {
+        .target_as = esp32_cache_cpu_as(crs),
+        .iova = addr & ~mask,
+        .translated_addr = window + crs->base + (addr & ~mask),
+        .addr_mask = mask,
+        .perm = IOMMU_RW,
+    };
+}
+
+/* TCG calls this unconditionally; there is a single translation per region */
+static int esp32_cache_iommu_attrs_to_index(IOMMUMemoryRegion *iommu,
+                                            MemTxAttrs attrs)
+{
+    return 0;
 }
 
 static void esp32_dport_init(Object *obj)
@@ -461,6 +550,20 @@ static void esp32_dport_class_init(ObjectClass *klass, void *data)
     device_class_set_props(dc, esp32_dport_properties);
 }
 
+static void esp32_cache_iommu_class_init(ObjectClass *klass, void *data)
+{
+    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
+
+    imrc->translate = esp32_cache_iommu_translate;
+    imrc->attrs_to_index = esp32_cache_iommu_attrs_to_index;
+}
+
+static const TypeInfo esp32_cache_iommu_info = {
+    .name = TYPE_ESP32_CACHE_IOMMU,
+    .parent = TYPE_IOMMU_MEMORY_REGION,
+    .class_init = esp32_cache_iommu_class_init,
+};
+
 static const TypeInfo esp32_dport_info = {
     .name = TYPE_ESP32_DPORT,
     .parent = TYPE_SYS_BUS_DEVICE,
@@ -471,6 +574,7 @@ static const TypeInfo esp32_dport_info = {
 
 static void esp32_dport_register_types(void)
 {
+    type_register_static(&esp32_cache_iommu_info);
     type_register_static(&esp32_dport_info);
 }
 

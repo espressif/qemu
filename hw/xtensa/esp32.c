@@ -354,19 +354,16 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     if (s->dport.flash_blk) {
         for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
             Esp32CacheRegionState *drom0 = &s->dport.cache_state[i].drom0;
-            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], drom0->base, &drom0->illegal_access_trap_mem, -2);
-            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], drom0->base, &drom0->mem, -1);
+            esp32_dport_map_cache_region(drom0, &s->cpu_specific_mem[i]);
             Esp32CacheRegionState *iram0 = &s->dport.cache_state[i].iram0;
-            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], iram0->base, &iram0->illegal_access_trap_mem, -2);
-            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], iram0->base, &iram0->mem, -1);
+            esp32_dport_map_cache_region(iram0, &s->cpu_specific_mem[i]);
         }
         init_cache_err = true;
     }
     if (s->dport.has_psram) {
         for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
             Esp32CacheRegionState *dram1 = &s->dport.cache_state[i].dram1;
-            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], dram1->base, &dram1->illegal_access_trap_mem, -2);
-            memory_region_add_subregion_overlap(&s->cpu_specific_mem[i], dram1->base, &dram1->mem, -1);
+            esp32_dport_map_cache_region(dram1, &s->cpu_specific_mem[i]);
         }
         init_cache_err = true;
     }
@@ -574,7 +571,8 @@ static void esp32_soc_init(Object *obj)
         s->cpu[i].env.sregs[PRID] = cpuid[i];
 
         snprintf(name, sizeof(name), "cpu%d-mem", i);
-        memory_region_init(&s->cpu_specific_mem[i], NULL, name, UINT32_MAX);
+        memory_region_init(&s->cpu_specific_mem[i], NULL, name,
+                           ESP32_CPU_ADDRESS_SPACE_SIZE);
 
         CPUState* cs = CPU(&s->cpu[i]);
         cs->num_ases = 1;
