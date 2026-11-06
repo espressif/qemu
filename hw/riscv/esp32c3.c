@@ -40,6 +40,8 @@
 #include "hw/timer/esp32c3_timg.h"
 #include "hw/timer/esp32c3_systimer.h"
 #include "hw/ssi/esp32c3_spi.h"
+#include "hw/ssi/esp32c3_spi2.h"
+#include "hw/sd/sd.h"
 #include "hw/misc/esp32c3_rtc_cntl.h"
 #include "hw/misc/esp32c3_aes.h"
 #include "hw/misc/esp32c3_rsa.h"
@@ -48,6 +50,12 @@
 #include "hw/misc/esp32c3_xts_aes.h"
 #include "hw/misc/esp32c3_jtag.h"
 #include "hw/dma/esp32c3_gdma.h"
+#include "hw/audio/esp32c3_i2s.h"
+#include "hw/i2c/esp32c3_i2c.h"
+#include "hw/i2c/bitbang_i2c.h"
+#include "hw/adc/esp32c3_saradc.h"
+#include "qapi/visitor.h"
+#include "hw/irq.h"
 #include "hw/display/esp_rgb.h"
 #include "hw/net/can/esp32c3_twai.h"
 
@@ -57,6 +65,14 @@
 #define ESP32C3_RESET_GPIO_NAME     "esp32c3.machine.reset_gpio"
 #define MB (1024*1024)
 
+
+/* State for the bit-banged I2C bridge; see esp32c3_pad_i2c_connect() */
+typedef struct Esp32C3PadI2C {
+    bitbang_i2c_interface bitbang;
+    /* Pulls the SDA pad low in the GPIO model, so the guest can read an ACK */
+    qemu_irq sda_pad_in;
+    int sda_level;
+} Esp32C3PadI2C;
 
 /* Define a new "class" which derivates from "MachineState" */
 struct Esp32C3MachineState {
@@ -86,10 +102,32 @@ struct Esp32C3MachineState {
     ESP32C3TimgState timg[2];
     ESP32C3SysTimerState systimer;
     ESP32C3SpiState spi1;
+    ESP32C3Spi2State spi2;
     ESP32C3RtcCntlState rtccntl;
     ESP32C3UsbJtagState jtag;
     ESPRgbState rgb;
     Esp32C3TWAIState twai;
+    Esp32C3I2SState i2s0;
+    Esp32C3I2CState i2c0;
+    Esp32C3SarAdcState saradc;
+
+    /* "i2c-pads" machine property: the board's I2C pad pair, "<scl>/<sda>" */
+    char *i2c_pads;
+
+    /*
+     * "adc-pad<n>" machine properties: the raw code each ADC-capable pad
+     * reads, or -1 when the board does not say and the ADC's default applies.
+     */
+    int32_t adc_pad[ESP32C3_SARADC_PAD_COUNT];
+
+    /* "sd-cs" machine property: the pad the board's SD chip select sits on */
+    char *sd_cs;
+
+    /* SD card ssi-sd device for GPIO CS routing */
+    DeviceState *sd_ssi_dev;
+
+    /* Bit-banged I2C on the board's pads, see esp32c3_pad_i2c_connect() */
+    Esp32C3PadI2C pad_i2c;
 };
 
 /* Fake register used by ESP-IDF application to determine whether the code is running on real hardware or on QEMU */
@@ -99,6 +137,13 @@ struct Esp32C3MachineState {
 
 /* Temporary macro to mark the CPU as in non-debugging mode */
 #define A_ASSIST_DEBUG_CORE_0_DEBUG_MODE_REG    0x098
+
+/*
+ * Pad the SD card chip select sits on when "sd-cs" is not given. 10 is the pad
+ * this machine wired unconditionally before the property existed, so every
+ * invocation that predates it keeps the line it had.
+ */
+#define ESP32C3_SD_CS_PAD_DEFAULT   10
 
 /* Create a macro which defines the name of our new machine class */
 #define TYPE_ESP32C3_MACHINE MACHINE_TYPE_NAME("esp32c3")
@@ -281,27 +326,31 @@ static void esp32c3_load_firmware(MachineState *machine)
     }
 
     if (bios_filename) {
-        /* Since EspRISCVCPU doens't have a RISCVHartArrayState field, let's bake one on the stack. It will only be
-         * used to get the type of the RISC-V CPU (32 or 64 bits) in `riscv_load_kernel` */
-        RISCVHartArrayState hart = {
-            .harts = &ms->soc.parent_obj,
-            .num_harts = 1,
-        };
-
-        /* The function `riscv_load_kernel` won't load the ELF file at its entry point, so we have to look
-         * for the ELF entry point manually here */
         uint64_t elf_entry = ESP32C3_RESET_ADDRESS;
 
-        /* The entry point address should be populated regardless of the return value */
-        load_elf_ram_sym(bios_filename, NULL, NULL, NULL,
+        /* Try to load as ELF first */
+        if (load_elf_ram_sym(bios_filename, NULL, NULL, NULL,
                         &elf_entry, NULL, NULL, NULL, 0,
-                        EM_RISCV, 1, 0, NULL, false, NULL);
+                        EM_RISCV, 1, 0, NULL, true, NULL) > 0) {
+            qemu_log("Loaded ELF '%s' at entry 0x%08" PRIx64 "\n", bios_filename, elf_entry);
+        } else {
+            /* Not an ELF, try as raw binary at reset address */
+            int size = load_image_targphys_as(bios_filename, ESP32C3_RESET_ADDRESS,
+                                              0x60000, CPU(&ms->soc)->as);
+            if (size < 0) {
+                error_report("Error: could not load firmware '%s'", bios_filename);
+                exit(1);
+            }
+            qemu_log("Loaded raw binary '%s' (%d bytes) at 0x%08x\n",
+                     bios_filename, size, ESP32C3_RESET_ADDRESS);
+            elf_entry = ESP32C3_RESET_ADDRESS;
+        }
 
-        /* On failure, riscv_load_kernel exits the program */
-        qemu_log("Loading kernel at address 0x%08" PRIx64 "\n", elf_entry);
-        riscv_load_kernel(machine, &hart, elf_entry, false, NULL);
         if (elf_entry != ESP32C3_RESET_ADDRESS) {
+            qemu_log("Setting resetvec to 0x%08" PRIx64 "\n", elf_entry);
             qdev_prop_set_uint64(DEVICE(&ms->soc), "resetvec", elf_entry);
+        } else {
+            qemu_log("Not changing resetvec, elf_entry == ESP32C3_RESET_ADDRESS\n");
         }
     } else {
         /* Open and load the "bios", which is the ROM binary, also named "first stage bootloader" */
@@ -322,6 +371,95 @@ static void esp32c3_load_firmware(MachineState *machine)
     }
 }
 
+
+/*
+ * Bit-banged I2C on the board's pads.
+ *
+ * Board autodetection probes the bus with MicroPython's SoftI2C before it
+ * knows which board it is running on: it toggles the two pads from software
+ * and never touches the I2C controller's registers. The controller model is
+ * driven through the GPIO matrix, so it never sees those toggles, and to a
+ * bit-banged probe the bus looks dead.
+ *
+ * This bridges the pads "i2c-pads" declares onto the same I2CBus the
+ * -device oro-i2c-chip slaves are already attached to, so one set of chip
+ * arguments serves both the controller and the probe. Binding to the declared
+ * pads rather than a pair of its own is what makes the interesting case work:
+ * a board whose bus is elsewhere (a Zero, probed on the ZeroC/One pair)
+ * correctly finds nothing, which is the dead-bus fallback worth being able to
+ * test.
+ */
+static void esp32c3_pad_i2c_set(void *opaque, int line, int level)
+{
+    Esp32C3PadI2C *s = opaque;
+    /*
+     * The return is the wired-AND of what the slave drives and the master's
+     * own last SDA, i.e. the level the pad actually sits at. Feeding that back
+     * as the pad's external level is a no-op while the guest is itself holding
+     * SDA low, and is the ACK once it has released it.
+     */
+    int sda = bitbang_i2c_set(&s->bitbang, line, level);
+
+    if (sda != s->sda_level) {
+        s->sda_level = sda;
+        qemu_set_irq(s->sda_pad_in, sda);
+    }
+}
+
+static void esp32c3_pad_i2c_connect(Esp32C3MachineState *ms, int scl, int sda)
+{
+    DeviceState *gpio = DEVICE(&ms->gpio);
+    const int pads[2] = { [BITBANG_I2C_SCL] = scl, [BITBANG_I2C_SDA] = sda };
+
+    /*
+     * One sink per out line, and qdev_connect_gpio_out_named() replaces
+     * silently -- so a pad already spoken for (the SD card chip select) would
+     * be stolen rather than refused.
+     */
+    for (int line = 0; line < 2; line++) {
+        if (qdev_get_gpio_out_connector(gpio, ESP32C3_GPIO_OUT_IRQ,
+                                        pads[line]) != NULL) {
+            error_report("i2c-pads: pad %d is already wired to another device "
+                         "on this machine (the SD card chip select?)",
+                         pads[line]);
+            exit(1);
+        }
+    }
+
+    bitbang_i2c_init(&ms->pad_i2c.bitbang, ms->i2c0.bus);
+    ms->pad_i2c.sda_level = 1;
+    ms->pad_i2c.sda_pad_in = qdev_get_gpio_in_named(gpio,
+                                                    ESP32C3_GPIO_EXT_OD_IRQ,
+                                                    sda);
+
+    /*
+     * BITBANG_I2C_SCL/SDA double as the line numbers, so the handler can pass
+     * what it is given straight through.
+     *
+     * The GPIO device pulses every out line low on reset, which can look like
+     * a START to the state machine when SDA happens to be the lower-numbered
+     * pad. Harmless: no transfer begins until eight bits have been clocked,
+     * and a real START resets both the state and the pending address.
+     */
+    for (int line = 0; line < 2; line++) {
+        qdev_connect_gpio_out_named(gpio, ESP32C3_GPIO_OUT_IRQ, pads[line],
+                                    qemu_allocate_irq(esp32c3_pad_i2c_set,
+                                                      &ms->pad_i2c, line));
+    }
+}
+
+static int esp32c3_sd_cs_pad(const Esp32C3MachineState *ms)
+{
+    int pad;
+
+    if (ms->sd_cs == NULL || ms->sd_cs[0] == '\0') {
+        return ESP32C3_SD_CS_PAD_DEFAULT;
+    }
+
+    /* Already validated by esp32c3_machine_set_sd_cs() */
+    sscanf(ms->sd_cs, "%d", &pad);
+    return pad;
+}
 
 static void esp32c3_machine_init(MachineState *machine)
 {
@@ -384,6 +522,12 @@ static void esp32c3_machine_init(MachineState *machine)
 
     qdev_realize(DEVICE(&ms->soc), NULL, &error_fatal);
 
+    /* Initialize stack pointer to top of DRAM (required when loading ELF directly) */
+    CPURISCVState *env = &ms->soc.parent_obj.env;
+    /* DRAM ends at 0x3FCE0000, set SP slightly below that */
+    env->gpr[2] = memmap[ESP32C3_MEMREGION_DRAM].base + memmap[ESP32C3_MEMREGION_DRAM].size - 16;
+    qemu_log("Initialized SP to 0x%08" PRIx64 "\n", (uint64_t)env->gpr[2]);
+
     memory_region_init_io(&ms->iomem, OBJECT(&ms->soc), &esp32c3_io_ops,
                           NULL, "esp32c3.iomem", 0xd1000);
     memory_region_add_subregion(sys_mem, ESP32C3_IO_START_ADDR, &ms->iomem);
@@ -423,10 +567,14 @@ static void esp32c3_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C3_TIMG);
     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C3_SYSTIMER);
     object_initialize_child(OBJECT(machine), "spi1", &ms->spi1, TYPE_ESP32C3_SPI);
+    object_initialize_child(OBJECT(machine), "spi2", &ms->spi2, TYPE_ESP32C3_SPI2);
     object_initialize_child(OBJECT(machine), "rtccntl", &ms->rtccntl, TYPE_ESP32C3_RTC_CNTL);
     object_initialize_child(OBJECT(machine), "jtag", &ms->jtag, TYPE_ESP32C3_JTAG);
     object_initialize_child(OBJECT(machine), "rgb", &ms->rgb, TYPE_ESP_RGB);
     object_initialize_child(OBJECT(machine), "twai", &ms->twai, TYPE_ESP32C3_TWAI);
+    object_initialize_child(OBJECT(machine), "i2s0", &ms->i2s0, TYPE_ESP32C3_I2S);
+    object_initialize_child(OBJECT(machine), "i2c0", &ms->i2c0, TYPE_ESP32C3_I2C);
+    object_initialize_child(OBJECT(machine), "saradc", &ms->saradc, TYPE_ESP32C3_SARADC);
 
     /* Realize all the I/O peripherals we depend on */
 
@@ -479,6 +627,49 @@ static void esp32c3_machine_init(MachineState *machine)
         }
     }
 
+    /* SPI2 controller (GPSPI2 - General Purpose SPI for SD card) */
+    {
+        /* Link SPI2 to GDMA for DMA-mode transfers */
+        ms->spi2.gdma = ESP_GDMA(&ms->gdma);
+
+        sysbus_realize(SYS_BUS_DEVICE(&ms->spi2), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->spi2), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_SPI2_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->spi2), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_SPI2_INTR_SOURCE));
+
+        /* Attach SD card if if=sd,index=1 drive is specified.
+         * Use -drive file=xxx.img,if=sd,index=1,format=raw to attach an SD image.
+         * We use index=1 (unit=1) to avoid conflict with QEMU's default SD drive at unit=0. */
+        DriveInfo *sd_dinfo = drive_get(IF_SD, 0, 1);
+        if (sd_dinfo) {
+            DeviceState *card_dev;
+            BusState *spi_bus = qdev_get_child_bus(DEVICE(&ms->spi2), "spi");
+
+            qemu_log("Adding SD card device to SPI2\n");
+
+            /* Create ssi-sd bridge which connects SPI bus to SD card */
+            DeviceState *ssi_sd = qdev_new("ssi-sd");
+            qdev_realize_and_unref(ssi_sd, spi_bus, &error_fatal);
+
+            /* Create the SD card (SPI variant) and attach to ssi-sd */
+            card_dev = qdev_new(TYPE_SD_CARD_SPI);
+            qdev_prop_set_drive_err(card_dev, "drive", blk_by_legacy_dinfo(sd_dinfo), &error_fatal);
+            /* Enable relaxed SPI mode for ESP-IDF SDSPI driver compatibility */
+            qdev_prop_set_bit(card_dev, "spi-relaxed-mode", true);
+            qdev_realize_and_unref(card_dev,
+                                   qdev_get_child_bus(ssi_sd, "sd-bus"),
+                                   &error_fatal);
+
+            /* Connect CS line from SPI2 hardware CS to ssi-sd (fallback) */
+            qdev_connect_gpio_out_named(DEVICE(&ms->spi2), SSI_GPIO_CS, 0,
+                                        qdev_get_gpio_in_named(ssi_sd, SSI_GPIO_CS, 0));
+
+            /* Store ssi_sd reference for GPIO CS connection after GPIO is realized */
+            ms->sd_ssi_dev = ssi_sd;
+        }
+    }
+
     for (int i = 0; i < ESP32C3_UART_COUNT; ++i) {
         const hwaddr uart_base[] = { DR_REG_UART_BASE, DR_REG_UART1_BASE };
         sysbus_realize(SYS_BUS_DEVICE(&ms->uart[i]), &error_fatal);
@@ -493,6 +684,19 @@ static void esp32c3_machine_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&ms->gpio), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->gpio), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
+
+        /* Connect the board's CS pad to SD card CS (ssi-sd device) if an SD
+         * card is attached. The ESP-IDF SDSPI driver controls CS via GPIO, not
+         * hardware SPI CS, so this is the line that actually selects the card.
+         * Which pad it is belongs to the board, hence "sd-cs"; the firmware's
+         * SD_CS has to name the same one. */
+        if (ms->sd_ssi_dev) {
+            const int cs_pad = esp32c3_sd_cs_pad(ms);
+
+            qemu_log("Connecting GPIO %d to SD card CS\n", cs_pad);
+            qdev_connect_gpio_out_named(DEVICE(&ms->gpio), ESP32C3_GPIO_OUT_IRQ, cs_pad,
+                                        qdev_get_gpio_in_named(ms->sd_ssi_dev, SSI_GPIO_CS, 0));
+        }
     }
 
     /* (Extmem) Cache realization */
@@ -586,6 +790,65 @@ static void esp32c3_machine_init(MachineState *machine)
 
     }
 
+    /* I2S0 realization */
+    {
+        ms->i2s0.gdma = ESP_GDMA(&ms->gdma);
+        sysbus_realize(SYS_BUS_DEVICE(&ms->i2s0), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->i2s0), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_I2S0_BASE, mr, 0);
+        /* The C3 has a single I2S; its interrupt source is named I2S1 in the matrix. */
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2s0), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_I2S1_INTR_SOURCE));
+    }
+
+    /* I2C0 realization */
+    {
+        int scl = -1;
+        int sda = -1;
+
+        /* Lets the controller resolve its current pads through the GPIO matrix */
+        object_property_set_link(OBJECT(&ms->i2c0), "gpio", OBJECT(&ms->gpio),
+                                 &error_abort);
+        if (ms->i2c_pads != NULL && ms->i2c_pads[0] != '\0') {
+            /* Already validated by esp32c3_machine_set_i2c_pads() */
+            sscanf(ms->i2c_pads, "%d/%d", &scl, &sda);
+            qdev_prop_set_int32(DEVICE(&ms->i2c0), "board-scl", scl);
+            qdev_prop_set_int32(DEVICE(&ms->i2c0), "board-sda", sda);
+        }
+        sysbus_realize(SYS_BUS_DEVICE(&ms->i2c0), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->i2c0), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2c0), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE));
+
+        /*
+         * The bus only exists after realize, and the pads only when the board
+         * declared them. No i2c-pads means no board bus to bit-bang onto,
+         * which is also what keeps the bare-metal register test -- which
+         * passes none, deliberately -- out of this path entirely.
+         */
+        if (scl >= 0 && sda >= 0) {
+            esp32c3_pad_i2c_connect(ms, scl, sda);
+        }
+    }
+
+    /* SAR ADC realization */
+    {
+        for (int pad = 0; pad < ESP32C3_SARADC_PAD_COUNT; pad++) {
+            if (ms->adc_pad[pad] >= 0) {
+                g_autofree char *prop = g_strdup_printf("pad%d", pad);
+
+                qdev_prop_set_uint16(DEVICE(&ms->saradc), prop,
+                                     ms->adc_pad[pad]);
+            }
+        }
+        sysbus_realize(SYS_BUS_DEVICE(&ms->saradc), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->saradc), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_APB_SARADC_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->saradc), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_APB_ADC_INTR_SOURCE));
+    }
+
     /* SHA realization */
     {
         ms->sha.parent.gdma = ESP_GDMA(&ms->gdma);
@@ -663,6 +926,124 @@ static void esp32c3_machine_init(MachineState *machine)
 
 
 /* Initialize machine type */
+static char *esp32c3_machine_get_i2c_pads(Object *obj, Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+
+    return g_strdup(ms->i2c_pads);
+}
+
+/*
+ * "i2c-pads=<scl>/<sda>" states which pads the simulated board's I2C bus is
+ * wired to. A real bus has exactly one pad pair, so this is a fact about the
+ * board; the controller NACKs the address phase whenever the guest routes
+ * I2C somewhere else. Omit it and every chip on the bus answers regardless of
+ * routing.
+ */
+static void esp32c3_machine_set_i2c_pads(Object *obj, const char *value,
+                                         Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+    int scl;
+    int sda;
+    char extra;
+
+    if (value != NULL && value[0] != '\0') {
+        if (sscanf(value, "%d/%d%c", &scl, &sda, &extra) != 2 ||
+            scl < 0 || scl >= ESP32C3_GPIO_COUNT ||
+            sda < 0 || sda >= ESP32C3_GPIO_COUNT) {
+            error_setg(errp, "i2c-pads: expected <scl>/<sda> with both pads "
+                       "in 0..%d, got '%s'", ESP32C3_GPIO_COUNT - 1, value);
+            return;
+        }
+    }
+
+    g_free(ms->i2c_pads);
+    ms->i2c_pads = g_strdup(value);
+}
+
+static char *esp32c3_machine_get_sd_cs(Object *obj, Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+
+    return g_strdup(ms->sd_cs);
+}
+
+/*
+ * "sd-cs=<pad>" states which pad drives the SD card's chip select. Like
+ * "i2c-pads" this is a fact about the board rather than about the card, and
+ * the card is attached at the SPI bus level, so CS is the only SD pin the
+ * emulator and the firmware have to agree on. Omit it for the historical pad.
+ */
+static void esp32c3_machine_set_sd_cs(Object *obj, const char *value,
+                                      Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+    int pad;
+    char extra;
+
+    if (value != NULL && value[0] != '\0') {
+        if (sscanf(value, "%d%c", &pad, &extra) != 1 ||
+            pad < 0 || pad >= ESP32C3_GPIO_COUNT) {
+            error_setg(errp, "sd-cs: expected a single pad in 0..%d, got '%s'",
+                       ESP32C3_GPIO_COUNT - 1, value);
+            return;
+        }
+    }
+
+    g_free(ms->sd_cs);
+    ms->sd_cs = g_strdup(value);
+}
+
+static void esp32c3_machine_get_adc_pad(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+    const int pad = GPOINTER_TO_INT(opaque);
+    uint16_t raw = ms->adc_pad[pad] >= 0 ? ms->adc_pad[pad]
+                                         : ESP32C3_SARADC_RAW_DEFAULT;
+
+    visit_type_uint16(v, name, &raw, errp);
+}
+
+/*
+ * "adc-pad<n>=<raw>" states what the ADC reads on pad <n>: the raw 12-bit
+ * code, as adc_oneshot_read() returns it. Like "i2c-pads" and "sd-cs" it is
+ * keyed by pad because it describes what the board hangs off that pad (a
+ * potentiometer's wiper, say), and the pad is also what the firmware names.
+ * Pads 0..4 are ADC1 channels 0..4 and pad 5 is ADC2 channel 0. Omit it and
+ * the pad reads mid-scale.
+ */
+static void esp32c3_machine_set_adc_pad(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+    const int pad = GPOINTER_TO_INT(opaque);
+    uint16_t raw;
+
+    if (!visit_type_uint16(v, name, &raw, errp)) {
+        return;
+    }
+    if (raw > ESP32C3_SARADC_RAW_MAX) {
+        error_setg(errp, "%s: expected a raw ADC code in 0..%d, got %u",
+                   name, ESP32C3_SARADC_RAW_MAX, raw);
+        return;
+    }
+
+    ms->adc_pad[pad] = raw;
+}
+
+static void esp32c3_machine_instance_init(Object *obj)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+
+    for (int pad = 0; pad < ESP32C3_SARADC_PAD_COUNT; pad++) {
+        ms->adc_pad[pad] = -1;
+    }
+}
+
 static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -673,6 +1054,36 @@ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
     mc->default_cpus = 1;
     // 0x4f600
     mc->default_ram_size = 400 * 1024;
+    /* Disable default devices that don't apply to embedded MCU.
+     * We allow sdcard via -drive if=sd,index=1, but disable the default
+     * empty SD card at index=0 to avoid conflicts. */
+    mc->no_floppy = true;
+    mc->no_cdrom = true;
+    mc->no_parallel = true;
+    mc->no_sdcard = true;  /* Disable default SD card - user must specify via -drive if=sd */
+
+    object_class_property_add_str(oc, "i2c-pads",
+                                  esp32c3_machine_get_i2c_pads,
+                                  esp32c3_machine_set_i2c_pads);
+    object_class_property_set_description(oc, "i2c-pads",
+        "pads the board's I2C bus is wired to: <scl>/<sda>, e.g. 7/6");
+
+    object_class_property_add_str(oc, "sd-cs",
+                                  esp32c3_machine_get_sd_cs,
+                                  esp32c3_machine_set_sd_cs);
+    object_class_property_set_description(oc, "sd-cs",
+        "pad driving the SD card chip select, e.g. 4 (default 10)");
+
+    for (int pad = 0; pad < ESP32C3_SARADC_PAD_COUNT; pad++) {
+        g_autofree char *name = g_strdup_printf("adc-pad%d", pad);
+
+        object_class_property_add(oc, name, "uint16",
+                                  esp32c3_machine_get_adc_pad,
+                                  esp32c3_machine_set_adc_pad,
+                                  NULL, GINT_TO_POINTER(pad));
+        object_class_property_set_description(oc, name,
+            "raw code the ADC reads on this pad, 0..4095 (default 2048)");
+    }
 }
 
 /* Create a new type of machine ("child class") */
@@ -682,6 +1093,7 @@ static const TypeInfo esp32c3_info = {
     .parent = TYPE_MACHINE,
     /* Real size in bytes of our machine instance */
     .instance_size = sizeof(Esp32C3MachineState),
+    .instance_init = esp32c3_machine_instance_init,
     /* Override the init function to one we defined above */
     .class_init = esp32c3_machine_class_init,
 };

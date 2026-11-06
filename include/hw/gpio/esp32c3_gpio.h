@@ -15,9 +15,60 @@
 #define ESP32C3_STRAP_MODE_UART_BOOT  0x2   /* Diagnostic Mode0+UART0 download Mode */
 #define ESP32C3_STRAP_MODE_USB_BOOT   0x0   /* Diagnostic Mode1+USB download Mode */
 
-typedef struct ESP32C3State {
+/* Number of GPIO pins on ESP32-C3 */
+#define ESP32C3_GPIO_COUNT 22
+
+/* Number of peripheral input signals the GPIO matrix can route */
+#define ESP32C3_GPIO_SIG_COUNT 256
+
+/* GPIO output IRQ name for connecting to external devices */
+#define ESP32C3_GPIO_OUT_IRQ "esp32c3-gpio-out"
+
+/*
+ * GPIO input IRQ name for an external device pulling a pad low, the
+ * open-drain case: level 0 means driven low from outside, level 1 released.
+ * There is no input latch in this model, so a pad otherwise reads back
+ * whatever the guest drives; this is the only way anything outside the guest
+ * can put a level on one.
+ */
+#define ESP32C3_GPIO_EXT_OD_IRQ "esp32c3-gpio-ext-od"
+
+typedef struct ESP32C3GPIOState {
     Esp32GpioState parent;
+
+    /* GPIO output state */
+    uint32_t gpio_out;
+    uint32_t gpio_enable;
+
+    /* Pads an external device is pulling low (ESP32C3_GPIO_EXT_OD_IRQ) */
+    uint32_t ext_od_low;
+
+    /* GPIO_FUNCn_IN_SEL_CFG: which pad each peripheral input signal reads */
+    uint32_t func_in_sel_cfg[ESP32C3_GPIO_SIG_COUNT];
+
+    /* GPIO_FUNCn_OUT_SEL_CFG: which signal drives each pad */
+    uint32_t func_out_sel_cfg[ESP32C3_GPIO_COUNT];
+
+    /* Output IRQs - one per GPIO pin */
+    qemu_irq gpio_out_irq[ESP32C3_GPIO_COUNT];
 } ESP32C3GPIOState;
+
+/**
+ * Return the pad a peripheral input signal is currently routed to, or -1 if
+ * the signal is unrouted or tied to a constant level.
+ */
+int esp32c3_gpio_signal_pad(ESP32C3GPIOState *s, unsigned sig);
+
+/* GPIO_FUNC<pad>_OUT_SEL_CFG.OUT_SEL value meaning "plain GPIO drives this
+ * pad" (soc/gpio_sig_map.h SIG_GPIO_OUT_IDX). Also the reset default. */
+#define ESP32C3_SIG_GPIO_OUT_IDX 128
+
+/**
+ * Return the peripheral output signal currently driving `pad`, or -1 if the
+ * pad number is out of range. ESP32C3_SIG_GPIO_OUT_IDX means no peripheral
+ * has claimed it.
+ */
+int esp32c3_gpio_pad_out_signal(ESP32C3GPIOState *s, unsigned pad);
 
 typedef struct ESP32C3GPIOClass {
     Esp32GpioClass parent;

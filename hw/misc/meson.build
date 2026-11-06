@@ -337,6 +337,7 @@ endif
 system_ss.add(when: 'CONFIG_GRLIB', if_true: files('grlib_ahb_apb_pnp.c'))
 
 system_ss.add(when: 'CONFIG_I2C_ECHO', if_true: files('i2c-echo.c'))
+system_ss.add(when: 'CONFIG_ORO_I2C_CHIP', if_true: files('oro_i2c_chip.c'))
 
 specific_ss.add(when: 'CONFIG_AVR_POWER', if_true: files('avr_power.c'))
 

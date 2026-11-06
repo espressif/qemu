@@ -43,6 +43,11 @@ config I2C_ECHO
     default y if TEST_DEVICES
     depends on I2C
 
+config ORO_I2C_CHIP
+    bool
+    default y if RISCV_ESP32C3
+    depends on I2C
+
 config PL310
     bool
 

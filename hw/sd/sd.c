@@ -183,6 +183,9 @@ struct SDState {
     bool enable;
     uint8_t dat_lines;
     bool cmd_line;
+
+    /* SPI mode compatibility flags */
+    bool spi_relaxed_mode;  /* Enable relaxed SPI mode for ESP-IDF SDSPI driver */
 };
 
 static void sd_realize(DeviceState *dev, Error **errp);
@@ -1577,7 +1580,10 @@ static sd_rsp_type_t emmc_cmd_SEND_EXT_CSD(SDState *sd, SDRequest req)
 /* CMD9 */
 static sd_rsp_type_t spi_cmd_SEND_CSD(SDState *sd, SDRequest req)
 {
-    if (sd->state != sd_standby_state) {
+    /* In relaxed SPI mode (ESP-IDF), CMD9 works in transfer state too */
+    bool valid_state = (sd->state == sd_standby_state) ||
+                       (sd->spi_relaxed_mode && sd->state == sd_transfer_state);
+    if (!valid_state) {
         return sd_invalid_state_for_cmd(sd, req);
     }
     return sd_cmd_to_sendingdata(sd, req, sd_req_get_address(sd, req),
@@ -1596,7 +1602,10 @@ static sd_rsp_type_t sd_cmd_SEND_CSD(SDState *sd, SDRequest req)
 /* CMD10 */
 static sd_rsp_type_t spi_cmd_SEND_CID(SDState *sd, SDRequest req)
 {
-    if (sd->state != sd_standby_state) {
+    /* In relaxed SPI mode (ESP-IDF), CMD10 works in transfer state too */
+    bool valid_state = (sd->state == sd_standby_state) ||
+                       (sd->spi_relaxed_mode && sd->state == sd_transfer_state);
+    if (!valid_state) {
         return sd_invalid_state_for_cmd(sd, req);
     }
     return sd_cmd_to_sendingdata(sd, req, sd_req_get_address(sd, req),
@@ -1649,7 +1658,12 @@ static sd_rsp_type_t sd_cmd_SEND_STATUS(SDState *sd, SDRequest req)
     }
 
     if (sd_is_spi(sd)) {
-        return sd_r2_s;
+        /*
+         * In relaxed SPI mode (ESP-IDF), CMD13 returns R1 response.
+         * The ssi-sd bridge converts the card_status into SPI R2 format.
+         * Standard SPI mode returns sd_r2_s (CSD register data).
+         */
+        return sd->spi_relaxed_mode ? sd_r1 : sd_r2_s;
     }
 
     return sd_req_rca_same(sd, req) ? sd_r1 : sd_r0;
@@ -2242,6 +2256,15 @@ int sd_do_command(SDState *sd, SDRequest *req,
     last_state = sd->state;
     sd_set_mode(sd);
 
+    /*
+     * In relaxed SPI mode (ESP-IDF), clear "error for current command" bits
+     * at the start of each command. ILLEGAL_COMMAND and COM_CRC_ERROR should
+     * reflect status of THIS command, not a previous command.
+     */
+    if (sd->spi_relaxed_mode) {
+        sd->card_status &= ~CARD_STATUS_B;
+    }
+
     if (sd->expecting_acmd) {
         sd->expecting_acmd = false;
         rtype = sd_app_command(sd, *req);
@@ -2806,6 +2829,7 @@ static Property sdmmc_common_properties[] = {
 static Property sd_properties[] = {
     DEFINE_PROP_UINT8("spec_version", SDState,
                       spec_version, SD_PHY_SPECv3_01_VERS),
+    DEFINE_PROP_BOOL("spi-relaxed-mode", SDState, spi_relaxed_mode, false),
     DEFINE_PROP_END_OF_LIST()
 };
 
