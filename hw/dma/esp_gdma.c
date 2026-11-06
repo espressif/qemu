@@ -685,6 +685,9 @@ static void esp_gdma_check_and_start_mem_transfer(ESPGdmaState *s, uint32_t chan
                     assert(valid);
                 }
                 exit_loop = out_list.config.suc_eof ? true : false;
+                if (exit_loop) {
+                    state_out->suc_eof_desc_addr = out_addr;
+                }
 
                 const uint32_t next_addr = out_list.next_addr;
                 valid = esp_gdma_next_list_node(s, chan, ESP_GDMA_OUT_IDX, &out_list);
@@ -767,7 +770,8 @@ static void esp_gdma_check_and_start_mem_transfer(ESPGdmaState *s, uint32_t chan
                                 R_GDMA_INTERRUPT_IN_SUC_EOF_MASK);
             esp_gdma_set_status(&state_out->int_state,
                                 R_GDMA_INTERRUPT_OUT_DONE_MASK |
-                                R_GDMA_INTERRUPT_OUT_EOF_MASK);
+                                R_GDMA_INTERRUPT_OUT_EOF_MASK  |
+                                R_GDMA_INTERRUPT_OUT_TOTAL_EOF_MASK);
         }
 
         g_free(tmp_buffer);
