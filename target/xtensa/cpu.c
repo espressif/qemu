@@ -195,7 +195,9 @@ static void xtensa_cpu_initfn(Object *obj)
                           UINT64_C(0x100000000));
     address_space_init(env->address_space_er, env->system_er, "ER");
 
-    cpu->clock = qdev_init_clock_in(DEVICE(obj), "clk-in", NULL, cpu, 0);
+    cpu->clock = qdev_init_clock_in(DEVICE(obj), "clk-in",
+                                    xtensa_cpu_clock_changed, cpu,
+                                    ClockPreUpdate | ClockUpdate);
     clock_set_hz(cpu->clock, env->config->clock_freq_khz * 1000);
 #endif
 }
