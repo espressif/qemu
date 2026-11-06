@@ -45,6 +45,8 @@
 /**
  * Index where priority registers start
  */
+#define ESP32C3_INTMATRIX_IO_STATUS_START (0xf8 / sizeof(uint32_t))
+#define ESP32C3_INTMATRIX_IO_STATUS_END   (0x100 / sizeof(uint32_t))
 #define ESP32C3_INTMATRIX_IO_PRIO_START (0x118 / sizeof(uint32_t))
 
 #define ESP32C3_INTMATRIX_IO_PRIO_END   (0x190 / sizeof(uint32_t))
