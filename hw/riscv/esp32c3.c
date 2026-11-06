@@ -53,6 +53,8 @@
 #include "hw/audio/esp32c3_i2s.h"
 #include "hw/i2c/esp32c3_i2c.h"
 #include "hw/i2c/bitbang_i2c.h"
+#include "hw/adc/esp32c3_saradc.h"
+#include "qapi/visitor.h"
 #include "hw/irq.h"
 #include "hw/display/esp_rgb.h"
 #include "hw/net/can/esp32c3_twai.h"
@@ -107,9 +109,16 @@ struct Esp32C3MachineState {
     Esp32C3TWAIState twai;
     Esp32C3I2SState i2s0;
     Esp32C3I2CState i2c0;
+    Esp32C3SarAdcState saradc;
 
     /* "i2c-pads" machine property: the board's I2C pad pair, "<scl>/<sda>" */
     char *i2c_pads;
+
+    /*
+     * "adc-pad<n>" machine properties: the raw code each ADC-capable pad
+     * reads, or -1 when the board does not say and the ADC's default applies.
+     */
+    int32_t adc_pad[ESP32C3_SARADC_PAD_COUNT];
 
     /* "sd-cs" machine property: the pad the board's SD chip select sits on */
     char *sd_cs;
@@ -562,6 +571,7 @@ static void esp32c3_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "twai", &ms->twai, TYPE_ESP32C3_TWAI);
     object_initialize_child(OBJECT(machine), "i2s0", &ms->i2s0, TYPE_ESP32C3_I2S);
     object_initialize_child(OBJECT(machine), "i2c0", &ms->i2c0, TYPE_ESP32C3_I2C);
+    object_initialize_child(OBJECT(machine), "saradc", &ms->saradc, TYPE_ESP32C3_SARADC);
 
     /* Realize all the I/O peripherals we depend on */
 
@@ -819,6 +829,23 @@ static void esp32c3_machine_init(MachineState *machine)
         }
     }
 
+    /* SAR ADC realization */
+    {
+        for (int pad = 0; pad < ESP32C3_SARADC_PAD_COUNT; pad++) {
+            if (ms->adc_pad[pad] >= 0) {
+                g_autofree char *prop = g_strdup_printf("pad%d", pad);
+
+                qdev_prop_set_uint16(DEVICE(&ms->saradc), prop,
+                                     ms->adc_pad[pad]);
+            }
+        }
+        sysbus_realize(SYS_BUS_DEVICE(&ms->saradc), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->saradc), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_APB_SARADC_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->saradc), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_APB_ADC_INTR_SOURCE));
+    }
+
     /* SHA realization */
     {
         ms->sha.parent.gdma = ESP_GDMA(&ms->gdma);
@@ -965,6 +992,55 @@ static void esp32c3_machine_set_sd_cs(Object *obj, const char *value,
     ms->sd_cs = g_strdup(value);
 }
 
+static void esp32c3_machine_get_adc_pad(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+    const int pad = GPOINTER_TO_INT(opaque);
+    uint16_t raw = ms->adc_pad[pad] >= 0 ? ms->adc_pad[pad]
+                                         : ESP32C3_SARADC_RAW_DEFAULT;
+
+    visit_type_uint16(v, name, &raw, errp);
+}
+
+/*
+ * "adc-pad<n>=<raw>" states what the ADC reads on pad <n>: the raw 12-bit
+ * code, as adc_oneshot_read() returns it. Like "i2c-pads" and "sd-cs" it is
+ * keyed by pad because it describes what the board hangs off that pad (a
+ * potentiometer's wiper, say), and the pad is also what the firmware names.
+ * Pads 0..4 are ADC1 channels 0..4 and pad 5 is ADC2 channel 0. Omit it and
+ * the pad reads mid-scale.
+ */
+static void esp32c3_machine_set_adc_pad(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+    const int pad = GPOINTER_TO_INT(opaque);
+    uint16_t raw;
+
+    if (!visit_type_uint16(v, name, &raw, errp)) {
+        return;
+    }
+    if (raw > ESP32C3_SARADC_RAW_MAX) {
+        error_setg(errp, "%s: expected a raw ADC code in 0..%d, got %u",
+                   name, ESP32C3_SARADC_RAW_MAX, raw);
+        return;
+    }
+
+    ms->adc_pad[pad] = raw;
+}
+
+static void esp32c3_machine_instance_init(Object *obj)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+
+    for (int pad = 0; pad < ESP32C3_SARADC_PAD_COUNT; pad++) {
+        ms->adc_pad[pad] = -1;
+    }
+}
+
 static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -994,6 +1070,17 @@ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
                                   esp32c3_machine_set_sd_cs);
     object_class_property_set_description(oc, "sd-cs",
         "pad driving the SD card chip select, e.g. 4 (default 10)");
+
+    for (int pad = 0; pad < ESP32C3_SARADC_PAD_COUNT; pad++) {
+        g_autofree char *name = g_strdup_printf("adc-pad%d", pad);
+
+        object_class_property_add(oc, name, "uint16",
+                                  esp32c3_machine_get_adc_pad,
+                                  esp32c3_machine_set_adc_pad,
+                                  NULL, GINT_TO_POINTER(pad));
+        object_class_property_set_description(oc, name,
+            "raw code the ADC reads on this pad, 0..4095 (default 2048)");
+    }
 }
 
 /* Create a new type of machine ("child class") */
@@ -1003,6 +1090,7 @@ static const TypeInfo esp32c3_info = {
     .parent = TYPE_MACHINE,
     /* Real size in bytes of our machine instance */
     .instance_size = sizeof(Esp32C3MachineState),
+    .instance_init = esp32c3_machine_instance_init,
     /* Override the init function to one we defined above */
     .class_init = esp32c3_machine_class_init,
 };
