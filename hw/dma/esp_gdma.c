@@ -662,11 +662,13 @@ static void esp_gdma_check_and_start_mem_transfer(ESPGdmaState *s, uint32_t chan
             if (!valid) {
                 esp_gdma_set_status(&state_out->int_state, R_GDMA_INTERRUPT_OUT_DSCR_ERR_MASK);
                 error = true;
+                break;
             }
             valid = esp_gdma_write_guest(s, in_list.buf_addr + in_list.config.length, tmp_buffer, min);
             if (!valid) {
                 esp_gdma_set_status(&state_in->int_state, R_GDMA_INTERRUPT_IN_DSCR_ERR_MASK);
                 error = true;
+                break;
             }
 
             /* Update the number of bytes written to the "in" buffer */
