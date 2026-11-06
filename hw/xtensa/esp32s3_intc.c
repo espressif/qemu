@@ -29,6 +29,11 @@
 static void esp32s3_intmatrix_irq_handler(void *opaque, int n, int level)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
+    if (level) {
+        set_bit(n, s->irq_levels);
+    } else {
+        clear_bit(n, s->irq_levels);
+    }
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
         if (s->outputs[i] == NULL) {
             continue;
@@ -57,9 +62,31 @@ static inline uint8_t* get_map_entry(Esp32s3IntMatrixState* s, hwaddr addr)
     return &IRQ_MAP(cpu_index, source_index);
 }
 
+/* Index of the INTR_STATUS register at this address (either CPU), or -1 */
+static int get_status_word(hwaddr addr)
+{
+    const hwaddr block = ESP32S3_INT_MATRIX_INPUTS * sizeof(uint32_t);
+    const hwaddr offset = addr % block - ESP32S3_INT_MATRIX_STATUS_OFFSET;
+    if (offset >= ESP32S3_INT_MATRIX_STATUS_WORDS * sizeof(uint32_t)) {
+        return -1;
+    }
+    return offset / sizeof(uint32_t);
+}
+
 static uint64_t esp32s3_intmatrix_read(void* opaque, hwaddr addr, unsigned int size)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
+    const int word = get_status_word(addr);
+    if (word >= 0) {
+        /* Raw levels of sources 32 * word + 0..31, the same for both CPUs */
+        uint32_t status = 0;
+        for (int bit = 0; bit < 32; ++bit) {
+            if (test_bit(word * 32 + bit, s->irq_levels)) {
+                status |= BIT(bit);
+            }
+        }
+        return status;
+    }
     uint8_t* map_entry = get_map_entry(s, addr);
     return (map_entry != NULL) ? *map_entry : 0;
 }
@@ -70,6 +97,10 @@ static void esp32s3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
     info_report("\x1b[31m[INTC] esp32s3_intmatrix_write  addr = %ld, value=%ld\x1b[0m", addr, value);
 #endif // INTC_DEBUG
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
+    if (get_status_word(addr) >= 0) {
+        /* INTR_STATUS registers are read-only */
+        return;
+    }
     uint8_t* map_entry = get_map_entry(s, addr);
     if (map_entry != NULL) {
         *map_entry = value & 0x1f;

@@ -18,6 +18,7 @@
 #include "hw/sysbus.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
+#include "qemu/bitmap.h"
 #include "target/xtensa/cpu.h"
 #include "target/xtensa/cpu-qom.h"
 #include "hw/misc/esp32s3_reg.h"
@@ -129,6 +130,10 @@ typedef enum {
 
 #define ESP32S3_INT_MATRIX_INPUTS (0x800/4)
 
+/* INTR_STATUS_0..3 of each CPU's block follow its 99 map registers */
+#define ESP32S3_INT_MATRIX_STATUS_OFFSET  0x18c
+#define ESP32S3_INT_MATRIX_STATUS_WORDS   4
+
 #define TYPE_ESP32S3_INTMATRIX "misc.esp32s3.intmatrix"
 #define ESP32S3_INTMATRIX(obj) OBJECT_CHECK(Esp32s3IntMatrixState, (obj), TYPE_ESP32S3_INTMATRIX)
 
@@ -142,6 +147,8 @@ typedef struct Esp32s3IntMatrixState {
     MemoryRegion iomem;
     qemu_irq *outputs[ESP32S3_CPU_COUNT];
     uint8_t irq_map[ESP32S3_CPU_COUNT][ESP32S3_INT_MATRIX_INPUTS];
+    /* Current level of every input (source) line */
+    DECLARE_BITMAP(irq_levels, ESP32S3_INT_MATRIX_INPUTS);
 
     /* properties */
     XtensaCPU *cpu[ESP32S3_CPU_COUNT];
