@@ -25,7 +25,7 @@ typedef struct SsiPsramState {
     uint32_t size_mbytes;
     uint32_t dummy;
     int command;
-    int addr;
+    uint32_t addr;
     int byte_count;
     int dummy_cycles;
     bool is_octal;

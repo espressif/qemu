@@ -133,8 +133,8 @@ static inline bool psram_is_read_command(SsiPsramState *s)
 static void psram_write_data(SsiPsramState *s, off_t offset, uint8_t byte)
 {
     uint8_t* ptr = (uint8_t*) memory_region_get_ram_ptr(&s->data_mr);
-    const uint32_t size_bytes = s->size_mbytes * 1024 * 1024;
-    off_t destination = s->addr + offset;
+    const uint64_t size_bytes = (uint64_t)s->size_mbytes * 1024 * 1024;
+    const uint64_t destination = (uint64_t)s->addr + offset;
     if (destination < size_bytes) {
         ptr[destination] = byte;
     }
@@ -148,8 +148,8 @@ static void psram_write_data(SsiPsramState *s, off_t offset, uint8_t byte)
 static uint8_t psram_read_data(SsiPsramState *s, off_t offset)
 {
     uint8_t* ptr = (uint8_t*) memory_region_get_ram_ptr(&s->data_mr);
-    const uint32_t size_bytes = s->size_mbytes * 1024 * 1024;
-    off_t destination = s->addr + offset;
+    const uint64_t size_bytes = (uint64_t)s->size_mbytes * 1024 * 1024;
+    const uint64_t destination = (uint64_t)s->addr + offset;
     if (destination < size_bytes) {
         return ptr[destination];
     }
@@ -452,8 +452,11 @@ static int psram_cs(SSIPeripheral *ss, bool select)
     if (!select) {
         /* If data were written to the cache via the MemoryRegion, we need to
          * mark the area as dirty since the ESP target's `cache` also uses it. */
-        if (s->state == ST_PROCESSING && psram_is_write_command(s)) {
-            memory_region_set_dirty(&s->data_mr, s->addr, s->byte_count);
+        const uint64_t size_bytes = (uint64_t)s->size_mbytes * 1024 * 1024;
+        if (s->state == ST_PROCESSING && psram_is_write_command(s) &&
+            s->addr < size_bytes) {
+            memory_region_set_dirty(&s->data_mr, s->addr,
+                                    MIN(s->byte_count, size_bytes - s->addr));
         }
         s->state = ST_IDLE;
         s->byte_count = 0;
