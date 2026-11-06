@@ -157,6 +157,10 @@ typedef struct Esp32s3SocState {
     SsiPsramState *psram;
 
     uint32_t requested_reset;
+    /* What RTC_CNTL's stall line last asked for, per core. */
+    bool cpu_stall_level[ESP32S3_CPU_COUNT];
+    /* Stall-line reports a core reset by the other core still waits for. */
+    uint8_t cpu_reset_hold[ESP32S3_CPU_COUNT];
 } Esp32s3SocState;
 
 
@@ -187,15 +191,106 @@ static void esp32s3_dig_reset(void *opaque, int n, int level)
     }
 }
 
+/*
+ * Hold a core while RTC_CNTL stalls it, or while it waits out a reset by the
+ * other core (below). The stall is RTC state: resetting the core does not
+ * release it (xtensa_cpu_reset_hold keeps runstall), as on the ESP32 machine.
+ */
+static void esp32s3_update_runstall(Esp32s3SocState *s, int n)
+{
+    CPUXtensaState *env = &s->cpu[n].env;
+    CPUState *core = CPU(&s->cpu[n]);
+    bool hold = s->cpu_stall_level[n] || s->cpu_reset_hold[n];
+
+    if (hold == env->runstall) {
+        return;
+    }
+    if (hold) {
+        xtensa_runstall(env, true);
+        return;
+    }
+    /* A halt the core never got to take must not stop it again. */
+    cpu_reset_interrupt(core, CPU_INTERRUPT_HALT);
+    if (qemu_cpu_is_self(core)) {
+        /*
+         * On one translation thread, that thread is the one making this
+         * write, so there is no sleeping thread to wake. A kick would end
+         * the releasing core's turn, and the released core would run before
+         * the releasing core's next instruction, which in ESP-IDF's restart
+         * is its own reset.
+         */
+        env->runstall = false;
+        core->halted = 0;
+    } else {
+        xtensa_runstall(env, false);
+    }
+}
+
+/*
+ * Reset one core and nothing else, which is what RTC_CNTL's SW_PROCPU_RST
+ * and SW_APPCPU_RST do on silicon.
+ */
+static void esp32s3_reset_one_core(Esp32s3SocState *s, int n)
+{
+    XtensaCPU *cpu = &s->cpu[n];
+
+    xtensa_select_static_vectors(&cpu->env, s->rtc_cntl.stat_vector_sel[n]);
+    remove_cpu_watchpoints(cpu);
+    cpu_reset(CPU(cpu));
+}
+
+static void esp32s3_reset_one_core_work(CPUState *cs, run_on_cpu_data data)
+{
+    esp32s3_reset_one_core(data.host_ptr, cs->cpu_index);
+}
+
 static void esp32s3_cpu_reset(void* opaque, int n, int level)
 {
     Esp32s3SocState *s = ESP32S3_SOC(opaque);
     if (level) {
-        s->requested_reset = (n == 0) ? ESP32S3_SOC_RESET_PROCPU : ESP32S3_SOC_RESET_APPCPU;
-        /* Use different cause for APP CPU so that its reset doesn't cause QEMU to exit,
-         * when -no-reboot option is given.
+        CPUState *core = CPU(&s->cpu[n]);
+
+        /*
+         * One core resetting the other. ESP-IDF's restart does this and
+         * stalls the core it reset a few instructions later. As a machine
+         * reset it would pause both cores and give the next turn to core 0,
+         * which on one translation thread then runs for a whole time slice:
+         * its ROM, and the bootloader after it, over memory the other core
+         * is still using, before the stall arrives. So reset that core
+         * alone, now: on one thread it is not running, and with a thread
+         * per core it is reset on its own thread.
+         *
+         * And hold it until the resetting core next writes the stall
+         * controls. On silicon it runs a few instructions before that
+         * write. Here the resetting core can lose its turn in between, and
+         * the core it reset would then run for the whole slice. RTC_CNTL
+         * raises this reset inside a write to OPTIONS0 and reports the
+         * stall line in the same write, so the hold outlasts that report
+         * and ends at the next one.
          */
-        ShutdownCause cause = (n == 0) ? SHUTDOWN_CAUSE_GUEST_RESET : SHUTDOWN_CAUSE_SUBSYSTEM_RESET;
+        if (current_cpu && current_cpu != core) {
+            s->cpu_reset_hold[n] = 2;
+            esp32s3_update_runstall(s, n);
+            if (qemu_cpu_is_self(core)) {
+                esp32s3_reset_one_core(s, n);
+            } else {
+                async_run_on_cpu(core, esp32s3_reset_one_core_work,
+                                 RUN_ON_CPU_HOST_PTR(s));
+            }
+            return;
+        }
+
+        s->requested_reset = (n == 0) ? ESP32S3_SOC_RESET_PROCPU : ESP32S3_SOC_RESET_APPCPU;
+        /*
+         * A core resetting itself is the last step of a restart, so the chip
+         * reboots, and under -no-reboot QEMU exits, whichever core it is.
+         * A reset from outside the cores keeps the APP CPU's own cause so
+         * that it does not end the run.
+         */
+        ShutdownCause cause = SHUTDOWN_CAUSE_GUEST_RESET;
+        if (n != 0 && !current_cpu) {
+            cause = SHUTDOWN_CAUSE_SUBSYSTEM_RESET;
+        }
         qemu_system_reset_request(cause);
     }
 }
@@ -223,10 +318,23 @@ static void esp32s3_soc_reset(DeviceState *dev)
         cpu_reset(CPU(&s->cpu[1]));
     }
     s->requested_reset = 0;
+    /* A machine reset ends any hold a core's reset left behind. */
+    for (int i = 0; i < ESP32S3_CPU_COUNT; i++) {
+        s->cpu_reset_hold[i] = 0;
+        esp32s3_update_runstall(s, i);
+    }
 }
 
 static void esp32s3_cpu_stall(void* opaque, int n, int level)
 {
+    Esp32s3SocState *s = ESP32S3_SOC(opaque);
+
+    /* RTC_CNTL reports the line on every write to its stall controls. */
+    s->cpu_stall_level[n] = level;
+    if (s->cpu_reset_hold[n]) {
+        s->cpu_reset_hold[n]--;
+    }
+    esp32s3_update_runstall(s, n);
 }
 
 static void esp32s3_clk_update(void* opaque, int n, int level)
