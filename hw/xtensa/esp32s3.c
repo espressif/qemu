@@ -216,11 +216,21 @@ static void esp32s3_soc_reset(DeviceState *dev)
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
         remove_cpu_watchpoints(&s->cpu[0]);
         cpu_reset(CPU(&s->cpu[0]));
+        /* LX7 silicon resets CPENABLE to 0xff; the generic Xtensa CPU
+         * reset leaves it at the ISA default (0). Restore the vendor
+         * reset value so guest firmware that relies on it (e.g. any
+         * exception path spilling f0..f15 before establishing CPENABLE,
+         * including xtensa-lx-rt's float-save-restore handler) does
+         * not hang on the first FP instruction. Measured directly:
+         * `rsr.cpenable` as the first instruction in `main` reads
+         * 0xff on ESP32-S3 hardware, 0x00 under qemu-system-xtensa. */
+        s->cpu[0].env.sregs[CPENABLE] = 0xff;
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_APPCPU && (ESP32S3_CPU_COUNT > 1)) {
         xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
         remove_cpu_watchpoints(&s->cpu[1]);
         cpu_reset(CPU(&s->cpu[1]));
+        s->cpu[1].env.sregs[CPENABLE] = 0xff;
     }
     s->requested_reset = 0;
 }
