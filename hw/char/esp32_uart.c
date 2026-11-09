@@ -142,6 +142,26 @@ static uint64_t uart_read(void *opaque, hwaddr addr, unsigned int size)
 }
 
 
+/* Whether the UART runs from REF_TICK (1 MHz) rather than the APB clock */
+static bool uart_on_ref_tick(ESP32UARTState *s)
+{
+    return ESP32_UART_GET_CLASS(s)->has_ref_tick &&
+           !FIELD_EX32(s->reg[R_UART_CONF0], UART_CONF0, TICK_REF_ALWAYS_ON);
+}
+
+static void uart_update_baud_rate(ESP32UARTState *s)
+{
+    unsigned clkdiv = (FIELD_EX32(s->reg[R_UART_CLKDIV], UART_CLKDIV, CLKDIV) << 4) +
+                      FIELD_EX32(s->reg[R_UART_CLKDIV], UART_CLKDIV, CLKDIV_FRAG);
+    unsigned baud_rate = 115200;
+    if (clkdiv != 0) {
+        /* FIXME: for the APB clock, this should depend on the APB frequency */
+        uint64_t sclk_freq = uart_on_ref_tick(s) ? 1000000 : 40000000;
+        baud_rate = (unsigned) ((sclk_freq << 4) / clkdiv);
+    }
+    s->baud_rate = baud_rate;
+}
+
 static void uart_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
@@ -179,20 +199,13 @@ static void uart_write(void *opaque, hwaddr addr,
             timer_del(&s->rx_timeout_timer);
             qemu_chr_fe_accept_input(&s->chr);
         }
+        uart_update_baud_rate(s);
         break;
 
-    case A_UART_CLKDIV: {
+    case A_UART_CLKDIV:
         s->reg[addr / 4] = value;
-        unsigned clkdiv = (FIELD_EX32(s->reg[R_UART_CLKDIV], UART_CLKDIV, CLKDIV) << 4) +
-                          FIELD_EX32(s->reg[R_UART_CLKDIV], UART_CLKDIV, CLKDIV_FRAG);
-        unsigned baud_rate = 115200;
-        if (clkdiv != 0) {
-            /* FIXME: this should depend on the APB frequency */
-            baud_rate = (unsigned) ((40000000ULL << 4) / clkdiv);
-        }
-        s->baud_rate = baud_rate;
+        uart_update_baud_rate(s);
         break;
-    }
 
     case A_UART_AUTOBAUD:
         /* If autobaud is enabled, pretend that sufficient number of edges on the RXD line
@@ -356,6 +369,10 @@ static void esp32_uart_reset_hold(Object *obj, ResetType type)
     ESP32UARTState *s = ESP32_UART(obj);
 
     memset(s->reg, 0, sizeof(s->reg));
+    if (ESP32_UART_GET_CLASS(s)->has_ref_tick) {
+        /* The ESP32's UART starts on the APB clock */
+        s->reg[R_UART_CONF0] = R_UART_CONF0_TICK_REF_ALWAYS_ON_MASK;
+    }
     s->reg[R_UART_RXD_CNT] = 0;
     s->reg[R_UART_INT_ST] = 0;
     s->reg[R_UART_INT_RAW] = 0;
@@ -428,6 +445,7 @@ static void esp32_uart_class_init(ObjectClass *klass, void *data)
     class->uart_write = uart_write;
     class->uart_read = uart_read;
     class->rxfifo_rst_mask = R_UART_CONF0_RXFIFO_RST_MASK;
+    class->has_ref_tick = true;
 
     rc->phases.hold = esp32_uart_reset_hold;
     dc->realize = esp32_uart_realize;

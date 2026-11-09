@@ -135,6 +135,8 @@ static void esp32c3_uart_class_init(ObjectClass *klass, void *data)
     esp32c3->parent_uart_read = esp32->uart_read;
     esp32->uart_write = esp32c3_uart_write;
     esp32->uart_read = esp32c3_uart_read;
+    /* The clock is chosen elsewhere, and CONF0's bit 27 is AUTOBAUD_EN */
+    esp32->has_ref_tick = false;
 }
 
 static const TypeInfo esp32c3_uart_info = {
