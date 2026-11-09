@@ -245,34 +245,41 @@ static void esp32_cache_data_sync(Esp32CacheRegionState* crs)
     bool decrypt = (flash_enc != NULL && esp32_flash_decryption_enabled(flash_enc));
 
     uint8_t* cache_data = (uint8_t*) memory_region_get_ram_ptr(&crs->mem);
+    g_autofree uint32_t* page = g_malloc(ESP32_CACHE_PAGE_SIZE);
     for (int i = 0; i < ESP32_CACHE_PAGES_PER_REGION; ++i) {
-        uint32_t* cache_page = (uint32_t*) (cache_data + i * ESP32_CACHE_PAGE_SIZE);
+        uint8_t* cache_page = cache_data + i * ESP32_CACHE_PAGE_SIZE;
         uint32_t mmu_entry = crs->mmu_table[i];
         if (!(mmu_entry & ESP32_CACHE_MMU_ENTRY_CHANGED)) {
             continue;
         }
         mmu_entry &= MMU_ENTRY_MASK;
         if (mmu_entry & ESP32_CACHE_MMU_INVALID_VAL) {
-            uint32_t fill_val = crs->illegal_access_retval;
             for (int word = 0; word < ESP32_CACHE_PAGE_SIZE / sizeof(uint32_t); ++word) {
-                cache_page[word] = fill_val;
+                page[word] = crs->illegal_access_retval;
             }
         } else {
             uint32_t phys_addr = mmu_entry * ESP32_CACHE_PAGE_SIZE;
-            blk_pread(crs->cache->dport->flash_blk, phys_addr, ESP32_CACHE_PAGE_SIZE, cache_page, 0);
+            blk_pread(crs->cache->dport->flash_blk, phys_addr, ESP32_CACHE_PAGE_SIZE, page, 0);
             if (decrypt) {
-                esp32_flash_decrypt_inplace(flash_enc, phys_addr, cache_page, ESP32_CACHE_PAGE_SIZE/4);
+                esp32_flash_decrypt_inplace(flash_enc, phys_addr, page, ESP32_CACHE_PAGE_SIZE/4);
             }
         }
         crs->mmu_table[i] &= ~ESP32_CACHE_MMU_ENTRY_CHANGED;
+        /* Only a page whose bytes changed needs its translated code thrown away. */
+        if (memcmp(cache_page, page, ESP32_CACHE_PAGE_SIZE) != 0) {
+            memcpy(cache_page, page, ESP32_CACHE_PAGE_SIZE);
+            memory_region_flush_rom_device(&crs->mem, i * ESP32_CACHE_PAGE_SIZE, ESP32_CACHE_PAGE_SIZE);
+        }
     }
-    memory_region_flush_rom_device(&crs->mem, 0, ESP32_CACHE_REGION_SIZE);
 }
 
 static void esp32_cache_invalidate_all_entries(Esp32CacheRegionState* crs)
 {
     for (int i = 0; i < ESP32_CACHE_PAGES_PER_REGION; ++i) {
-        crs->mmu_table[i] |= ESP32_CACHE_MMU_ENTRY_CHANGED;
+        /* A page mapped to nothing holds the fill value, whatever is in flash. */
+        if (!(crs->mmu_table[i] & ESP32_CACHE_MMU_INVALID_VAL)) {
+            crs->mmu_table[i] |= ESP32_CACHE_MMU_ENTRY_CHANGED;
+        }
     }
 }
 
