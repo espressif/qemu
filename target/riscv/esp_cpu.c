@@ -769,8 +769,9 @@ static void esp_cpu_override_tcg_interrupts(Object *obj)
     /* `tcg_ops` and the class are shared by every instance, but instance_init
      * runs once per CPU. On a dual-core SOC the second pass would copy the
      * already-patched table onto itself and latch esp_cpu_exec_interrupt as
-     * its own parent, recursing until the stack is exhausted. */
-    if (cc->tcg_ops == &tcg_ops) {
+     * its own parent, recursing until the stack is exhausted. Under non-TCG
+     * accelerators such as qtest, `cc->tcg_ops` is NULL. */
+    if (!cc->tcg_ops || cc->tcg_ops == &tcg_ops) {
         return;
     }
 
