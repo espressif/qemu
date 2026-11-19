@@ -75,6 +75,9 @@ config NE2000_ISA
 config OPENCORES_ETH
     bool
 
+config ESP32_WIFI
+    bool
+
 config XGMAC
     bool
 

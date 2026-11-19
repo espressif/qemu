@@ -122,6 +122,9 @@ static uint64_t esp32_dport_read(void *opaque, hwaddr addr, unsigned int size)
     case A_DPORT_SLAVE_SPI_CONFIG:
         r = s->slave_spi_config_reg;
         break;
+    case A_DPORT_CORE_RST_EN:
+        r = s->core_rst_en;
+        break;
     }
 
     return r;
@@ -220,6 +223,11 @@ static void esp32_dport_write(void *opaque, hwaddr addr,
         break;
     case APP_IRAM0_MMU_FIRST ... APP_IRAM0_MMU_LAST:
         set_mmu_entry(&s->cache_state[1].iram0, APP_IRAM0_MMU_FIRST, addr, value);
+        break;
+    case A_DPORT_CORE_RST_EN:
+        s->core_rst_en = value;
+        qemu_set_irq(s->wifi_mac_rst_gpio,
+                     FIELD_EX32(value, DPORT_CORE_RST_EN, WIFIMAC_RST));
         break;
     case A_DPORT_SLAVE_SPI_CONFIG:
         s->slave_spi_config_reg = value;
@@ -373,6 +381,7 @@ static void esp32_dport_reset_hold(Object *obj, ResetType type)
     s->appcpu_reset_state = true;
     s->appcpu_stall_state = false;
     s->cache_ill_trap_en_reg = 0;
+    s->core_rst_en = 0;
     esp32_cache_reset(&s->cache_state[0]);
     esp32_cache_reset(&s->cache_state[1]);
     qemu_irq_lower(s->appcpu_stall_req);
@@ -442,6 +451,8 @@ static void esp32_dport_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(sbd), &s->clk_update_req, ESP32_DPORT_CLK_UPDATE_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->cache_ill_irq, ESP32_DPORT_CACHE_ILL_IRQ_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->flash_enc_en_gpio, ESP32_DPORT_FLASH_ENC_EN_GPIO, 1);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->wifi_mac_rst_gpio,
+                             ESP32_DPORT_WIFI_MAC_RST_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->flash_dec_en_gpio, ESP32_DPORT_FLASH_DEC_EN_GPIO, 1);
 }
 

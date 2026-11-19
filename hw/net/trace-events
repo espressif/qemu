@@ -27,6 +27,13 @@ ne2000_write(uint64_t addr, uint64_t val) "write addr=0x%" PRIx64 " val=0x%" PRI
 ne2000_ioport_read(uint64_t addr, uint64_t val) "io read addr=0x%02" PRIx64 " val=0x%02" PRIx64
 ne2000_ioport_write(uint64_t addr, uint64_t val) "io write addr=0x%02" PRIx64 " val=0x%02" PRIx64
 
+# esp32_wifi.c
+esp32_wifi_tx(uint8_t fc, size_t len) "fc 0x%02x len %zu"
+esp32_wifi_rx(uint8_t fc, size_t len) "fc 0x%02x len %zu"
+esp32_wifi_rx_drop(uint8_t fc, size_t len) "queue full, fc 0x%02x len %zu"
+esp32_wifi_rx_no_desc(uint32_t addr, uint32_t word0) "descriptor 0x%08x word0 0x%08x not ready"
+esp32_wifi_sta_state(int state) "station state %d"
+
 # opencores_eth.c
 open_eth_mii_write(unsigned idx, uint16_t v) "MII[0x%02x] <- 0x%04x"
 open_eth_mii_read(unsigned idx, uint16_t v) "MII[0x%02x] -> 0x%04x"

@@ -24,6 +24,7 @@
 #include "hw/net/can/esp32_twai.h"
 #include "hw/sd/dwc_sdmmc.h"
 #include "hw/display/esp_rgb.h"
+#include "hw/net/esp32_wifi.h"
 
 typedef struct Esp32SocState {
     /*< private >*/
@@ -55,6 +56,7 @@ typedef struct Esp32SocState {
 
     DWCSDMMCState sdmmc;
     DeviceState *eth;
+    Esp32WifiState wifi;
 
     BusState rtc_bus;
     BusState periph_bus;

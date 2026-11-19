@@ -187,6 +187,8 @@ static void esp32_soc_reset(DeviceState *dev)
         }
         device_cold_reset(DEVICE(&s->twai));
         device_cold_reset(DEVICE(&s->efuse));
+        /* No RX DMA into descriptors a restarted firmware no longer owns */
+        device_cold_reset(DEVICE(&s->wifi));
         if (s->eth) {
             device_cold_reset(s->eth);
         }
@@ -260,6 +262,22 @@ static void esp32_soc_add_periph_device(MemoryRegion *dest, void* dev, hwaddr dp
     char *name = g_strdup_printf("mr-apb-0x%08x", (uint32_t) dport_base_addr);
     memory_region_init_alias(mr_apb, OBJECT(dev), name, mr, 0, memory_region_size(mr));
     memory_region_add_subregion_overlap(dest, dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE, mr_apb, 0);
+    g_free(name);
+}
+
+static void esp32_soc_add_periph_region(MemoryRegion *dest, void *dev, int n,
+                                        hwaddr dport_base_addr, int priority)
+{
+    MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), n);
+    MemoryRegion *mr_apb = g_new(MemoryRegion, 1);
+    char *name = g_strdup_printf("mr-apb-0x%08x", (uint32_t) dport_base_addr);
+
+    memory_region_add_subregion_overlap(dest, dport_base_addr, mr, priority);
+    memory_region_init_alias(mr_apb, OBJECT(dev), name, mr, 0,
+                             memory_region_size(mr));
+    memory_region_add_subregion_overlap(dest, dport_base_addr -
+                                        DR_REG_DPORT_APB_BASE + APB_REG_BASE,
+                                        mr_apb, priority);
     g_free(name);
 }
 
@@ -519,6 +537,37 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0,
                        qdev_get_gpio_in(intmatrix_dev, ETS_SDIO_HOST_INTR_SOURCE));
 
+    /*
+     * Always present, as WiFi firmware faults on a missing MAC;
+     * -nic model=esp32_wifi attaches it to a network.
+     */
+    qemu_configure_nic_device(DEVICE(&s->wifi), false, NULL);
+    qdev_realize(DEVICE(&s->wifi), &s->periph_bus, &error_fatal);
+    static const hwaddr wifi_mmio[ESP32_WIFI_MMIO_COUNT] = {
+        [ESP32_WIFI_MMIO_MAC] = DR_REG_WIFI_BASE,
+        [ESP32_WIFI_MMIO_FE2] = DR_REG_FE2_BASE,
+        [ESP32_WIFI_MMIO_FE] = DR_REG_FE_BASE,
+        [ESP32_WIFI_MMIO_ANA] = DR_REG_ANA_BASE,
+        [ESP32_WIFI_MMIO_NRX] = DR_REG_NRX_BASE & ~0xfff,
+        [ESP32_WIFI_MMIO_BB] = DR_REG_BB_BASE,
+        [ESP32_WIFI_MMIO_PHY] = DR_REG_PHY_BASE,
+        [ESP32_WIFI_MMIO_PHYA] = DR_REG_PHYA_BASE,
+        [ESP32_WIFI_MMIO_WDEV] = DR_REG_WDEV_BASE,
+        [ESP32_WIFI_MMIO_BT] = DR_REG_BT_BASE,
+    };
+    for (int i = 0; i < ESP32_WIFI_MMIO_COUNT; i++) {
+        /* Below the RNG (inside WDEV), above the analog unimp stub */
+        esp32_soc_add_periph_region(sys_mem, &s->wifi, i, wifi_mmio[i], -1);
+    }
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->wifi), 0,
+                       qdev_get_gpio_in(intmatrix_dev,
+                                        ETS_WIFI_MAC_INTR_SOURCE));
+    qdev_connect_gpio_out_named(DEVICE(&s->dport),
+                                ESP32_DPORT_WIFI_MAC_RST_GPIO, 0,
+                                qdev_get_gpio_in_named(DEVICE(&s->wifi),
+                                                       ESP32_WIFI_MAC_RST_GPIO,
+                                                       0));
+
     /* Provide internal RAM MemoryRegion to the RGB display */
     s->rgb.intram = dram;
     qdev_realize(DEVICE(&s->rgb), &s->periph_bus, &error_abort);
@@ -658,6 +707,8 @@ static void esp32_soc_init(Object *obj)
     object_initialize_child(obj, "flash_enc", &s->flash_enc, TYPE_ESP32_FLASH_ENCRYPTION);
 
     object_initialize_child(obj, "sdmmc", &s->sdmmc, TYPE_DWC_SDMMC);
+
+    object_initialize_child(obj, "wifi", &s->wifi, TYPE_ESP32_WIFI);
 
     object_initialize_child(obj, "rgb", &s->rgb, TYPE_ESP_RGB);
 

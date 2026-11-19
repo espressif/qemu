@@ -59,6 +59,9 @@
 #define DR_REG_UART2_BASE                       0x3ff6E000
 #define DR_REG_PWM2_BASE                        0x3ff6F000
 #define DR_REG_PWM3_BASE                        0x3ff70000
+#define DR_REG_WIFI_BASE                        0x3ff73000
+#define DR_REG_PHY_BASE                         0x3ff71000
+#define DR_REG_PHYA_BASE                        0x3ff74000
 #define DR_REG_WDEV_BASE                        0x3ff75000
 
 #define APB_REG_BASE                            0x60000000
