@@ -26,6 +26,7 @@
 #include "target/riscv/esp_cpu.h"
 #include "hw/riscv/boot.h"
 #include "sysemu/sysemu.h"
+#include "sysemu/tcg.h"
 #include "sysemu/runstate.h"
 #include "sysemu/reset.h"
 #include "sysemu/blockdev.h"
@@ -498,13 +499,15 @@ static void esp32p4_machine_init(MachineState *machine)
         env->misa_ext |= RVA | RVF;
         env->misa_ext_mask |= RVA | RVF;
         Object *cpu_obj = OBJECT(&ms->cpu[i]);
-        object_property_set_bool(cpu_obj, "zca", true, &error_abort);
-        object_property_set_bool(cpu_obj, "zcb", true, &error_abort);
-        object_property_set_bool(cpu_obj, "zcmp", true, &error_abort);
-        object_property_set_bool(cpu_obj, "zcmt", true, &error_abort);
-        object_property_set_bool(cpu_obj, "zcd", false, &error_abort);
-        object_property_set_bool(cpu_obj, "zcf", true, &error_abort);
-        object_property_set_bool(cpu_obj, "zicsr", true, &error_abort);
+        if (tcg_enabled()) {
+            object_property_set_bool(cpu_obj, "zca", true, &error_abort);
+            object_property_set_bool(cpu_obj, "zcb", true, &error_abort);
+            object_property_set_bool(cpu_obj, "zcmp", true, &error_abort);
+            object_property_set_bool(cpu_obj, "zcmt", true, &error_abort);
+            object_property_set_bool(cpu_obj, "zcd", false, &error_abort);
+            object_property_set_bool(cpu_obj, "zcf", true, &error_abort);
+            object_property_set_bool(cpu_obj, "zicsr", true, &error_abort);
+        }
 
         /*
          * Per-hart address space, so that DR_REG_CLIC_BASE can resolve to a

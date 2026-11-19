@@ -24,6 +24,7 @@
 #include "sysemu/device_tree.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/kvm.h"
+#include "sysemu/tcg.h"
 #include "sysemu/runstate.h"
 #include "sysemu/reset.h"
 #include "net/net.h"
@@ -519,13 +520,15 @@ static void esp32c5_machine_init(MachineState *machine)
         env->misa_ext |= RVA;
         env->misa_ext_mask |= RVA;
         Object *soc_obj = OBJECT(&ms->soc);
-        object_property_set_bool(soc_obj, "zca", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcb", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcmp", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcmt", true, &error_abort);
-        object_property_set_bool(soc_obj, "zcd", false, &error_abort);
-        object_property_set_bool(soc_obj, "zcf", false, &error_abort);
-        object_property_set_bool(soc_obj, "zicsr", true, &error_abort);
+        if (tcg_enabled()) {
+            object_property_set_bool(soc_obj, "zca", true, &error_abort);
+            object_property_set_bool(soc_obj, "zcb", true, &error_abort);
+            object_property_set_bool(soc_obj, "zcmp", true, &error_abort);
+            object_property_set_bool(soc_obj, "zcmt", true, &error_abort);
+            object_property_set_bool(soc_obj, "zcd", false, &error_abort);
+            object_property_set_bool(soc_obj, "zcf", false, &error_abort);
+            object_property_set_bool(soc_obj, "zicsr", true, &error_abort);
+        }
     }
 
     const struct MemmapEntry *memmap = esp32c5_memmap;
