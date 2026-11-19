@@ -50,6 +50,14 @@ typedef enum {
     ESP32_WIFI_STA_ASSOCIATED,
 } Esp32WifiStaState;
 
+/* QEMU as a station of an access point the guest runs (SoftAP) */
+typedef enum {
+    ESP32_WIFI_SOFTAP_NONE,
+    ESP32_WIFI_SOFTAP_AUTHENTICATING,
+    ESP32_WIFI_SOFTAP_ASSOCIATING,
+    ESP32_WIFI_SOFTAP_ASSOCIATED,
+} Esp32WifiSoftApState;
+
 struct Esp32WifiState {
     SysBusDevice parent_obj;
 
@@ -75,6 +83,20 @@ struct Esp32WifiState {
     Esp32WifiStaState sta_state;
     uint8_t sta_mac[6];
     uint16_t seq;
+
+    /*
+     * The guest's SoftAP and QEMU's station in it. Host frames enter it with
+     * the station's address (peer is the host's), so any backend works.
+     */
+    Esp32WifiSoftApState softap_state;
+    uint8_t softap_bssid[6];
+    char softap_ssid[33];
+    uint8_t softap_station[6];
+    uint8_t softap_peer[6];
+    bool softap_peer_known;
+    int64_t softap_last_beacon;
+    int64_t softap_last_try;
+    int64_t softap_last_null;
 };
 
 #endif
