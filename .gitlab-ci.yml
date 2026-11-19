@@ -42,6 +42,10 @@ generate_version:
   script:
     - ./.github/workflows/scripts/configure-native.sh
     - ninja -C build install
+    - |
+      if [[ "$TARGET" == *-softmmu ]]; then
+        make -C build check-report-esp-qtest.junit.xml
+      fi
 
     - find ./install/qemu/share/qemu -maxdepth 1 -mindepth 1 -not -name 'esp*.bin' -exec rm -rfv {} \;
     - DIST_DIR=${PWD}/dist
@@ -51,16 +55,28 @@ generate_version:
     - tar cJvf ${DIST_DIR}/${ARCHIVE_NAME} qemu
     - echo $ARCHIVE_NAME >${DIST_DIR}/archive_name_${TARGET}_${PLATFORM}
 
+.build_linux_softmmu_template:
+  extends: .build_linux_template
+  artifacts:
+    when: always
+    paths:
+      - dist/qemu-*.tar.xz
+      - dist/archive_name_*
+      - build/meson-logs/check-report-esp-qtest.txt
+    reports:
+      junit: build/check-report-esp-qtest.junit.xml
+    expire_in: 1 week
+
 # these build jobs names are used in needs:project in idf/qemu-tests
 # don't rename it without updating the needs:project in idf/qemu-tests
 
 build_linux_xtensa_softmmu:
-  extends: .build_linux_template
+  extends: .build_linux_softmmu_template
   variables:
     TARGET: xtensa-softmmu
 
 build_linux_riscv32_softmmu:
-  extends: .build_linux_template
+  extends: .build_linux_softmmu_template
   variables:
     TARGET: riscv32-softmmu
 
@@ -68,6 +84,32 @@ build_linux_riscv32_user:
   extends: .build_linux_template
   variables:
     TARGET: riscv32-linux-user
+
+build_win64_cross:
+  stage: build
+  image: registry.gitlab.com/qemu-project/qemu/qemu/fedora-win64-cross:latest
+  tags:
+    - build
+    - amd64
+  needs: []
+  script:
+    - mkdir -p build
+    - cd build
+    - |
+      ../configure \
+        ${QEMU_CONFIGURE_OPTS} \
+        --target-list=xtensa-softmmu,riscv32-softmmu \
+        --without-default-features \
+        --enable-gcrypt \
+        --enable-sdl \
+        --enable-pixman \
+        --enable-stack-protector \
+        --enable-fdt=internal \
+        --disable-docs \
+        --disable-plugins \
+        --enable-werror \
+        -Ddebug=false
+    - ninja -j6 qemu-system-xtensa.exe qemu-system-riscv32.exe tests/qtest/esp/esp-qtest.exe
 
 upload_to_http:
   image: espressif/scp
