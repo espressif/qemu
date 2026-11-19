@@ -8,8 +8,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "libqtest.h"
 #include "qemu/timer.h"
+#include "esp-qtest.h"
 
 static void test_machine_init(const void *data)
 {
@@ -22,17 +22,14 @@ static void test_machine_init(const void *data)
 
 static void add_esp_machine_test(const char *mname)
 {
-    if (!g_str_has_prefix(mname, "esp32")) {
-        return;
-    }
-
-    g_autofree char *path = g_strdup_printf("%s/qtest-init", mname);
+    g_autofree char *path =
+        g_strdup_printf("/esp/machine/%s/qtest-init", mname);
     qtest_add_data_func_full(path, g_strdup(mname), test_machine_init, g_free);
 }
 
-int main(int argc, char **argv)
+static void register_machine_tests(void)
 {
-    g_test_init(&argc, &argv, NULL);
-    qtest_cb_for_every_machine(add_esp_machine_test, false);
-    return g_test_run();
+    esp_qtest_for_every_machine(add_esp_machine_test);
 }
+
+ESP_QTEST_SUITE(register_machine_tests)

@@ -270,15 +270,7 @@ qtests_s390x = \
    'migration-test']
 
 qtests_riscv32 = \
-  (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : []) + \
-  ['esp-machine-test']
-
-qtests_xtensa = \
-  ['esp-machine-test'] + \
-  (config_all_devices.has_key('CONFIG_XTENSA_ESP32S3') ? ['esp-periph-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_XTENSA_ESP32') ? ['esp32-intmatrix-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_XTENSA_ESP32S3') ? ['esp32s3-intmatrix-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_XTENSA_ESP32S3') ? ['esp-spi-test'] : [])
+  (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : [])
 
 qtests_riscv64 = \
   (unpack_edk2_blobs ? ['bios-tables-test'] : [])
@@ -435,3 +427,5 @@ foreach dir : target_dirs
          suite: ['qtest', 'qtest-' + target_base])
   endforeach
 endforeach
+
+subdir('esp')
