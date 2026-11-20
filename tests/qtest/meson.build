@@ -271,7 +271,8 @@ qtests_s390x = \
 
 qtests_riscv32 = \
   (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : []) + \
-  ['esp-machine-test']
+  ['esp-machine-test'] + \
+  (config_all_devices.has_key('CONFIG_RISCV_ESP32C6') ? ['esp32c6-spi-flash-test'] : [])
 
 qtests_xtensa = \
   ['esp-machine-test'] + \
