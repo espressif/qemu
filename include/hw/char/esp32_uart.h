@@ -59,6 +59,7 @@ REG32(UART_RXD_CNT, 0x30)
 
 /* TODO: implement */
 REG32(UART_CONF0, 0x20)
+    FIELD(UART_CONF0, TICK_REF_ALWAYS_ON, 27, 1)
     FIELD(UART_CONF0, RXFIFO_RST, 17, 1)
 REG32(UART_CONF1, 0x24)
     FIELD(UART_CONF1, TOUT_EN, 31, 1)
@@ -127,6 +128,8 @@ typedef struct ESPUARTClass {
     uint64_t (*uart_read)(void *opaque, hwaddr addr, unsigned int size);
     /* Where this chip has RXFIFO_RST in CONF0 */
     uint32_t rxfifo_rst_mask;
+    /* Whether CONF0's TICK_REF_ALWAYS_ON picks the clock, as on the ESP32 */
+    bool has_ref_tick;
 } ESP32UARTClass;
 
 
