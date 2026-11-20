@@ -168,37 +168,67 @@ static void esp32c3_spi_perform_transaction(ESP32C3SpiState *s, ESP32C3SpiTransa
 }
 
 
-static inline void esp32c3_spi_get_addr(ESP32C3SpiState *s, uint32_t* addr, uint32_t* len)
+/*
+ * spare_bits (may be NULL) receives the address phase length in bits minus
+ * the bits sent as *len whole bytes. It is positive when the phase ends in a
+ * partial byte that was not sent, and negative when the last byte sent was
+ * completed with bits that the controller sends in the dummy phase. The
+ * dummy phase must account for it, see esp32c3_spi_get_dummy().
+ */
+static inline void esp32c3_spi_get_addr(ESP32C3SpiState *s, uint32_t *addr,
+                                        uint32_t *len, int32_t *spare_bits)
 {
     uint32_t address = FIELD_EX32(s->mem_addr, SPI_MEM_ADDR, USR_ADDR_VALUE);
-    const uint32_t address_len = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_ADDR_BITLEN);
-    *len = (address_len + 1) / 8;
+    const uint32_t bits =
+        FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_ADDR_BITLEN) + 1;
+    *len = bits / 8;
 
-    if (s->addr_phase_has_wb_mode && *len == 4) {
-        address = (address << 8) | FIELD_EX32(s->mem_rd_st, SPI_MEM_RD_STATUS, WB_MODE);
+    if (s->addr_phase_has_wb_mode && bits > 24 && bits < 40) {
+        /*
+         * The phase holds the 24-bit address from SPI_MEM_ADDR, then WB_MODE.
+         * In DIO mode, esp_rom_spiflash_read() of the C6 and H2 ROMs sends a
+         * 28-bit phase: the 4 high mode bits here and the 4 low ones in 2
+         * dummy cycles. The flash model takes the mode bits as one byte, so
+         * send the whole byte here and take its last bits from the dummy
+         * phase.
+         */
+        address = (address << 8) |
+                  FIELD_EX32(s->mem_rd_st, SPI_MEM_RD_STATUS, WB_MODE);
+        *len = 4;
+    }
+    if (spare_bits) {
+        *spare_bits = (int32_t)bits - (int32_t)(*len * 8);
     }
     /* SPI Flash expects the address to be sent with MSB first. We make the assumption that
      * the host computer uses a little-endian CPU. */
     *addr = bswap32(address);
 }
 
-static inline void esp32c3_spi_get_dummy(ESP32C3SpiState *s, uint32_t* len)
+static inline void esp32c3_spi_get_dummy(ESP32C3SpiState *s,
+                                         int32_t spare_bits, uint32_t *len)
 {
     /* The field holds the cycle count minus one */
-    const uint32_t field = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN);
+    const int32_t cycles =
+        FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN) + 1;
+    int32_t bits;
 
-    /* The emulated devices count this phase in bytes. In a DIO or QIO read a
-     * cycle carries 2 or 4 bits. Round down: IDF adds cycles to compensate for
-     * input delay, which the flash does not see as data. */
+    /*
+     * The emulated devices count this phase in bytes. In a DIO or QIO read a
+     * cycle carries 2 or 4 bits. The bits that the address phase left over or
+     * borrowed (spare_bits) belong to the same byte stream. Round down: IDF
+     * adds cycles to compensate for input delay, which the flash does not see
+     * as data.
+     */
     if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_QIO)) {
-        *len = (field + 1) * 4 / 8;
+        bits = cycles * 4 + spare_bits;
     } else if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_DIO)) {
-        *len = (field + 1) * 2 / 8;
+        bits = cycles * 2 + spare_bits;
     } else {
         /* 8 cycles, with or without one added for input delay, are 1 byte.
          * The 18 cycles of an octal PSRAM read are the 3 bytes the model expects. */
-        *len = (field + 7) / 8;
+        bits = cycles + spare_bits + 6;
     }
+    *len = bits > 0 ? bits / 8 : 0;
 }
 
 static void esp32c3_spi_begin_transaction(ESP32C3SpiState *s)
@@ -228,7 +258,9 @@ static void esp32c3_spi_begin_transaction(ESP32C3SpiState *s)
 
     /* Get the address and its length, in bytes */
     if (s->mem_user & R_SPI_MEM_USER_USR_ADDR_MASK) {
-        esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes);
+        int32_t spare_bits;
+
+        esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes, &spare_bits);
         if (t.addr_bytes > 0 && t.addr_bytes <= 4) {
             t.addr = t.addr >> (32 - t.addr_bytes * 8);
         }
@@ -240,7 +272,7 @@ static void esp32c3_spi_begin_transaction(ESP32C3SpiState *s)
 
         /* Only calculate and include dummy cycles when the USR_DUMMY bit is set! */
         if (s->mem_user & R_SPI_MEM_USER_USR_DUMMY_MASK) {
-            esp32c3_spi_get_dummy(s, &t.dummy_bytes);
+            esp32c3_spi_get_dummy(s, spare_bits, &t.dummy_bytes);
         }
     }
 
@@ -257,7 +289,7 @@ static void esp32c3_spi_special_command(ESP32C3SpiState *s, uint32_t command)
     switch (command >> 19 << 19) {
         case R_SPI_MEM_CMD_FLASH_READ_MASK:
             t.cmd = CMD_READ;
-            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes);
+            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes, NULL);
             t.addr = t.addr >> (32 - t.addr_bytes * 8);
             t.data = s->data_reg;
             t.rx_bytes = (FIELD_EX32(s->mem_miso_len, SPI_MEM_MISO_DLEN, USR_MISO_DBITLEN) + 1) / 8;
@@ -292,7 +324,7 @@ static void esp32c3_spi_special_command(ESP32C3SpiState *s, uint32_t command)
         case R_SPI_MEM_CMD_FLASH_PP_MASK:
             t.cmd = CMD_PP;
             t.data = s->data_reg;
-            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes);
+            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes, NULL);
             /* The number of bytes to process is in the upper-byte of address */
             t.tx_bytes = (s->mem_addr >> 24) & 0xff;
             /**
@@ -306,7 +338,7 @@ static void esp32c3_spi_special_command(ESP32C3SpiState *s, uint32_t command)
 
         case R_SPI_MEM_CMD_FLASH_SE_MASK:
             t.cmd = CMD_SE;
-            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes);
+            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes, NULL);
             /* For the same reasons as explained above, we need to adjust `t.addr`, but here, the shift
              * to perform is not fixed and depends on the address length */
             t.addr = t.addr >> (32 - t.addr_bytes * 8);
@@ -314,7 +346,7 @@ static void esp32c3_spi_special_command(ESP32C3SpiState *s, uint32_t command)
 
         case R_SPI_MEM_CMD_FLASH_BE_MASK:
             t.cmd = CMD_BE;
-            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes);
+            esp32c3_spi_get_addr(s, &t.addr, &t.addr_bytes, NULL);
             t.addr = t.addr >> (32 - t.addr_bytes * 8);
             break;
 
