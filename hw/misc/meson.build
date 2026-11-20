@@ -150,6 +150,7 @@ system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files(
 
 system_ss.add(when: 'CONFIG_XTENSA_ESP8266', if_true: files(
   'esp8266_ana.c',
+  'esp8266_dport.c',
   'esp8266_iomux.c',
   'esp8266_rtc.c',
   'esp8266_sar.c',
