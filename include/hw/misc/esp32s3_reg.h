@@ -57,6 +57,7 @@
 #define DR_REG_UART2_BASE                       0x6002E000
 #define DR_REG_USB_SERIAL_JTAG_BASE             0x60038000
 #define DR_REG_USB_WRAP_BASE                    0x60039000
+#define DR_REG_USB_OTG_BASE                     0x60080000
 #define DR_REG_AES_BASE                         0x6003A000
 #define DR_REG_SHA_BASE                         0x6003B000
 #define DR_REG_RSA_BASE                         0x6003C000
