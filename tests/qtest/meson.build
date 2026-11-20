@@ -278,7 +278,9 @@ qtests_xtensa = \
   (config_all_devices.has_key('CONFIG_XTENSA_ESP32S3') ? ['esp-periph-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XTENSA_ESP32') ? ['esp32-intmatrix-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XTENSA_ESP32S3') ? ['esp32s3-intmatrix-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_XTENSA_ESP32S3') ? ['esp-spi-test'] : [])
+  (config_all_devices.has_key('CONFIG_XTENSA_ESP32S3') ? ['esp-spi-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_XTENSA_ESP8266') ? \
+    ['esp8266-test', 'esp8266-wifi-test'] : [])
 
 qtests_riscv64 = \
   (unpack_edk2_blobs ? ['bios-tables-test'] : [])
