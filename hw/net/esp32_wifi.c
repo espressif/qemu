@@ -81,66 +81,10 @@
 #define RX_RATE_11M             11
 
 #define FCS_LEN                 4
-#define BEACON_INTERVAL_TU      100
-#define BEACON_NS               (BEACON_INTERVAL_TU * 1024 * 1000LL)
-#define RX_SPACING_NS           (100 * 1000)
-#define RX_RETRY_NS             (1000 * 1000)  /* no free RX descriptor */
-#define RX_QUEUE_MAX            64
-
-/* 802.11 */
-#define FC_MGMT_ASSOC_REQ       0x00
-#define FC_MGMT_ASSOC_RESP      0x10
-#define FC_MGMT_PROBE_REQ       0x40
-#define FC_MGMT_PROBE_RESP      0x50
-#define FC_MGMT_BEACON          0x80
-#define FC_MGMT_DISASSOC        0xa0
-#define FC_MGMT_AUTH            0xb0
-#define FC_MGMT_DEAUTH          0xc0
-#define FC_DATA                 0x08
-#define FC_TYPE_MASK            0x0c
-#define FC_TYPE_DATA            0x08
-#define FC_SUBTYPE_MASK         0xf0
-#define FC1_TO_DS               0x01
-#define FC1_FROM_DS             0x02
-
 #define HDR_LEN                 24
-#define LLC_SNAP_LEN            8
-#define ETH_HDR_LEN             14
 #define FRAME_MAX               1600
 
-#define CAP_ESS                 0x0001
-#define CAP_PRIVACY             0x0010
-#define CAP_SHORT_SLOT          0x0400
-#define AID                     1
-
-#define FC_NULL_DATA            0x48
-#define ETH_P_ARP_HI            0x08
-#define ETH_P_ARP_LO            0x06
-#define ARP_SHA                 (ETH_HDR_LEN + 8)   /* sender MAC */
-#define ARP_THA                 (ETH_HDR_LEN + 18)  /* target MAC */
-#define ARP_LEN                 (ETH_HDR_LEN + 28)
-
-#define SOFTAP_RETRY_NS         (500 * 1000 * 1000LL)
-#define SOFTAP_GONE_NS          (3 * NANOSECONDS_PER_SECOND)
-#define SOFTAP_NULL_NS          (10 * NANOSECONDS_PER_SECOND)
-
 static const uint8_t broadcast_mac[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-static const uint8_t llc_snap[6] = { 0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00 };
-/* 1, 2, 5.5, 11 (basic), 6, 9, 12, 18 Mbit/s; then 24, 36, 48, 54 */
-static const uint8_t rates[] = {
-    0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
-};
-static const uint8_t ext_rates[] = { 0x30, 0x48, 0x60, 0x6c };
-
-typedef struct Esp32WifiFrame {
-    size_t len;                 /* without FCS */
-    uint8_t data[FRAME_MAX];
-} Esp32WifiFrame;
-
-static const uint8_t *esp32_wifi_bssid(Esp32WifiState *s)
-{
-    return s->conf.macaddr.a;
-}
 
 static void esp32_wifi_update_irq(Esp32WifiState *s)
 {
@@ -155,14 +99,16 @@ static bool esp32_wifi_addr_match(const uint8_t *addr, const uint8_t *own)
 }
 
 /* Fill the next RX descriptor; false when the guest has none ready. */
-static bool esp32_wifi_deliver(Esp32WifiState *s, Esp32WifiFrame *f)
+static bool esp32_wifi_deliver(void *opaque, const uint8_t *frame,
+                               size_t frame_len)
 {
+    Esp32WifiState *s = opaque;
     uint32_t rx_ctrl[RX_CTRL_WORDS] = { 0 };
     uint32_t desc[3];
-    uint32_t len = f->len + FCS_LEN;
+    uint32_t len = frame_len + FCS_LEN;
     const uint8_t *own0 = (uint8_t *)&s->regs[A_WIFI_MAC_ADDR0 / 4];
     const uint8_t *own1 = (uint8_t *)&s->regs[A_WIFI_MAC_ADDR1 / 4];
-    const uint8_t *da = f->data + 4, *bssid = f->data + 16;
+    const uint8_t *da = frame + 4, *bssid = frame + 16;
     uint8_t fcs[FCS_LEN] = { 0 };
 
     if (!s->rx_next) {
@@ -189,7 +135,7 @@ static bool esp32_wifi_deliver(Esp32WifiState *s, Esp32WifiFrame *f)
     rx_ctrl[0] = deposit32(rx_ctrl[0], 31, 1,
                            esp32_wifi_addr_match(bssid, own1));
     rx_ctrl[2] = deposit32(0, 0, 8, (uint8_t)RX_NOISE_FLOOR);
-    rx_ctrl[2] = deposit32(rx_ctrl[2], 16, 4, s->channel);
+    rx_ctrl[2] = deposit32(rx_ctrl[2], 16, 4, s->ap.channel);
     rx_ctrl[3] = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
     rx_ctrl[6] = deposit32(len, 12, 12, len);
     for (int i = 0; i < RX_CTRL_WORDS; i++) {
@@ -199,9 +145,9 @@ static bool esp32_wifi_deliver(Esp32WifiState *s, Esp32WifiFrame *f)
     address_space_write(&address_space_memory, desc[1], MEMTXATTRS_UNSPECIFIED,
                         rx_ctrl, sizeof(rx_ctrl));
     address_space_write(&address_space_memory, desc[1] + sizeof(rx_ctrl),
-                        MEMTXATTRS_UNSPECIFIED, f->data, f->len);
+                        MEMTXATTRS_UNSPECIFIED, frame, frame_len);
     address_space_write(&address_space_memory,
-                        desc[1] + sizeof(rx_ctrl) + f->len,
+                        desc[1] + sizeof(rx_ctrl) + frame_len,
                         MEMTXATTRS_UNSPECIFIED, fcs, sizeof(fcs));
     /* The driver reads length and EOF; it hands the descriptor back itself. */
     desc[0] = deposit32(desc[0], 12, 12, sizeof(rx_ctrl) + len) | DESC_EOF;
@@ -209,370 +155,11 @@ static bool esp32_wifi_deliver(Esp32WifiState *s, Esp32WifiFrame *f)
     address_space_write(&address_space_memory, s->rx_next,
                         MEMTXATTRS_UNSPECIFIED, &desc[0], 4);
 
-    trace_esp32_wifi_rx(f->data[0], f->len);
+    trace_esp32_wifi_rx(frame[0], frame_len);
     s->rx_next = desc[2] ? desc[2] : s->rx_head;
     s->int_raw |= WIFI_INT_RX_DONE;
     esp32_wifi_update_irq(s);
     return true;
-}
-
-static void esp32_wifi_rx_timer(void *opaque)
-{
-    Esp32WifiState *s = opaque;
-    Esp32WifiFrame *f = g_queue_peek_head(&s->rx_queue);
-    int64_t delay = RX_RETRY_NS;
-
-    if (f && esp32_wifi_deliver(s, f)) {
-        g_free(g_queue_pop_head(&s->rx_queue));
-        qemu_flush_queued_packets(qemu_get_queue(s->nic));
-        delay = RX_SPACING_NS;
-    }
-    if (!g_queue_is_empty(&s->rx_queue)) {
-        timer_mod(s->rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay);
-    }
-}
-
-/* Queue a frame for the guest; delivered from a timer, never re-entrantly. */
-static void esp32_wifi_queue(Esp32WifiState *s, Esp32WifiFrame *f)
-{
-    if (g_queue_get_length(&s->rx_queue) >= RX_QUEUE_MAX) {
-        trace_esp32_wifi_rx_drop(f->data[0], f->len);
-        g_free(f);
-        return;
-    }
-    g_queue_push_tail(&s->rx_queue, f);
-    if (!timer_pending(s->rx_timer)) {
-        timer_mod(s->rx_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + RX_SPACING_NS);
-    }
-}
-
-static Esp32WifiFrame *esp32_wifi_new_frame(Esp32WifiState *s, uint8_t fc0,
-                                            uint8_t fc1, const uint8_t *a1,
-                                            const uint8_t *a2,
-                                            const uint8_t *a3)
-{
-    Esp32WifiFrame *f = g_new0(Esp32WifiFrame, 1);
-
-    f->data[0] = fc0;
-    f->data[1] = fc1;
-    memcpy(f->data + 4, a1, 6);
-    memcpy(f->data + 10, a2, 6);
-    memcpy(f->data + 16, a3, 6);
-    stw_le_p(f->data + 22, (s->seq++ & 0xfff) << 4);
-    f->len = HDR_LEN;
-    return f;
-}
-
-static void esp32_wifi_put(Esp32WifiFrame *f, const void *data, size_t len)
-{
-    memcpy(f->data + f->len, data, len);
-    f->len += len;
-}
-
-static void esp32_wifi_put_ie(Esp32WifiFrame *f, uint8_t id, const void *data,
-                              uint8_t len)
-{
-    f->data[f->len++] = id;
-    f->data[f->len++] = len;
-    esp32_wifi_put(f, data, len);
-}
-
-static void esp32_wifi_put_le16(Esp32WifiFrame *f, uint16_t v)
-{
-    stw_le_p(f->data + f->len, v);
-    f->len += 2;
-}
-
-static void esp32_wifi_put_rates(Esp32WifiFrame *f)
-{
-    esp32_wifi_put_ie(f, 1, rates, sizeof(rates));
-    esp32_wifi_put_ie(f, 50, ext_rates, sizeof(ext_rates));
-}
-
-/* Beacon or probe response body */
-static void esp32_wifi_send_bss(Esp32WifiState *s, uint8_t fc0,
-                                const uint8_t *da)
-{
-    const uint8_t *bssid = esp32_wifi_bssid(s);
-    Esp32WifiFrame *f = esp32_wifi_new_frame(s, fc0, 0, da, bssid, bssid);
-    uint64_t tsf = cpu_to_le64(qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
-    static const uint8_t tim[] = { 0, 1, 0, 0 };
-
-    esp32_wifi_put(f, &tsf, sizeof(tsf));
-    esp32_wifi_put_le16(f, BEACON_INTERVAL_TU);
-    esp32_wifi_put_le16(f, CAP_ESS | CAP_SHORT_SLOT);
-    esp32_wifi_put_ie(f, 0, s->ssid, strlen(s->ssid));
-    esp32_wifi_put_ie(f, 1, rates, sizeof(rates));
-    esp32_wifi_put_ie(f, 3, &s->channel, 1);
-    if (fc0 == FC_MGMT_BEACON) {
-        esp32_wifi_put_ie(f, 5, tim, sizeof(tim));
-    }
-    esp32_wifi_put_ie(f, 50, ext_rates, sizeof(ext_rates));
-    esp32_wifi_queue(s, f);
-}
-
-static void esp32_wifi_set_state(Esp32WifiState *s, Esp32WifiStaState state)
-{
-    if (s->sta_state != state) {
-        trace_esp32_wifi_sta_state(state);
-        s->sta_state = state;
-    }
-}
-
-/* TX: frames from the guest to the access point */
-
-static void esp32_wifi_mgmt(Esp32WifiState *s, const uint8_t *frame,
-                            size_t len)
-{
-    const uint8_t *sa = frame + 10, *bssid = esp32_wifi_bssid(s);
-    const uint8_t *body = frame + HDR_LEN;
-    Esp32WifiFrame *f;
-
-    switch (frame[0]) {
-    case FC_MGMT_PROBE_REQ:
-        esp32_wifi_send_bss(s, FC_MGMT_PROBE_RESP, sa);
-        break;
-    case FC_MGMT_AUTH:
-        /* open system authentication, transaction 1 */
-        if (len < HDR_LEN + 6 || lduw_le_p(body) != 0 ||
-            lduw_le_p(body + 2) != 1) {
-            break;
-        }
-        f = esp32_wifi_new_frame(s, FC_MGMT_AUTH, 0, sa, bssid, bssid);
-        esp32_wifi_put_le16(f, 0);      /* open system */
-        esp32_wifi_put_le16(f, 2);      /* transaction 2 */
-        esp32_wifi_put_le16(f, 0);      /* success */
-        esp32_wifi_queue(s, f);
-        memcpy(s->sta_mac, sa, 6);
-        esp32_wifi_set_state(s, ESP32_WIFI_STA_AUTHENTICATED);
-        break;
-    case FC_MGMT_ASSOC_REQ:
-        if (s->sta_state == ESP32_WIFI_STA_NONE || memcmp(sa, s->sta_mac, 6)) {
-            break;
-        }
-        f = esp32_wifi_new_frame(s, FC_MGMT_ASSOC_RESP, 0, sa, bssid, bssid);
-        esp32_wifi_put_le16(f, CAP_ESS | CAP_SHORT_SLOT);
-        esp32_wifi_put_le16(f, 0);      /* success */
-        esp32_wifi_put_le16(f, 0xc000 | AID);
-        esp32_wifi_put_rates(f);
-        esp32_wifi_queue(s, f);
-        esp32_wifi_set_state(s, ESP32_WIFI_STA_ASSOCIATED);
-        break;
-    case FC_MGMT_DEAUTH:
-    case FC_MGMT_DISASSOC:
-        if (!memcmp(sa, s->sta_mac, 6)) {
-            esp32_wifi_set_state(s, ESP32_WIFI_STA_NONE);
-        }
-        break;
-    }
-}
-
-/* An LLC/SNAP data frame as Ethernet; 0 for null data, QoS and the like. */
-static size_t esp32_wifi_to_eth(const uint8_t *frame, size_t len,
-                                const uint8_t *da, const uint8_t *sa,
-                                uint8_t *eth)
-{
-    size_t payload_len;
-
-    if (frame[0] != FC_DATA || len < HDR_LEN + LLC_SNAP_LEN ||
-        memcmp(frame + HDR_LEN, llc_snap, sizeof(llc_snap))) {
-        return 0;
-    }
-    payload_len = len - HDR_LEN - LLC_SNAP_LEN;
-    memcpy(eth, da, 6);
-    memcpy(eth + 6, sa, 6);
-    memcpy(eth + 12, frame + HDR_LEN + 6, 2);
-    memcpy(eth + ETH_HDR_LEN, frame + HDR_LEN + LLC_SNAP_LEN, payload_len);
-    return ETH_HDR_LEN + payload_len;
-}
-
-/* To-DS data frame from the station: addr1 BSSID, addr2 SA, addr3 DA. */
-static void esp32_wifi_data(Esp32WifiState *s, const uint8_t *frame,
-                            size_t len)
-{
-    uint8_t eth[ETH_HDR_LEN + FRAME_MAX];
-    size_t eth_len;
-
-    if (s->sta_state != ESP32_WIFI_STA_ASSOCIATED ||
-        (frame[1] & 3) != FC1_TO_DS ||
-        memcmp(frame + 4, esp32_wifi_bssid(s), 6)) {
-        return;
-    }
-    eth_len = esp32_wifi_to_eth(frame, len, frame + 16, frame + 10, eth);
-    if (eth_len) {
-        qemu_send_packet(qemu_get_queue(s->nic), eth, eth_len);
-    }
-}
-
-/* Station side: QEMU in the guest's SoftAP */
-
-static void esp32_wifi_softap_set_state(Esp32WifiState *s,
-                                        Esp32WifiSoftApState state)
-{
-    if (s->softap_state != state) {
-        trace_esp32_wifi_softap_state(state, s->softap_ssid);
-        s->softap_state = state;
-        s->softap_last_try = 0;
-    }
-}
-
-/* Authentication or association request, whichever the link needs next. */
-static void esp32_wifi_softap_try(Esp32WifiState *s)
-{
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    const uint8_t *ap = s->softap_bssid;
-    Esp32WifiFrame *f;
-
-    if (now - s->softap_last_try < SOFTAP_RETRY_NS) {
-        return;
-    }
-    s->softap_last_try = now;
-    if (s->softap_state == ESP32_WIFI_SOFTAP_AUTHENTICATING) {
-        f = esp32_wifi_new_frame(s, FC_MGMT_AUTH, 0, ap, s->softap_station,
-                                 ap);
-        esp32_wifi_put_le16(f, 0);      /* open system */
-        esp32_wifi_put_le16(f, 1);      /* transaction 1 */
-        esp32_wifi_put_le16(f, 0);
-    } else if (s->softap_state == ESP32_WIFI_SOFTAP_ASSOCIATING) {
-        f = esp32_wifi_new_frame(s, FC_MGMT_ASSOC_REQ, 0, ap,
-                                 s->softap_station, ap);
-        esp32_wifi_put_le16(f, CAP_ESS | CAP_SHORT_SLOT);
-        esp32_wifi_put_le16(f, 10);     /* listen interval */
-        esp32_wifi_put_ie(f, 0, s->softap_ssid, strlen(s->softap_ssid));
-        esp32_wifi_put_rates(f);
-    } else {
-        return;
-    }
-    esp32_wifi_queue(s, f);
-}
-
-/* Every beacon interval: keep the link alive, or notice it is gone. */
-static void esp32_wifi_softap_tick(Esp32WifiState *s)
-{
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-
-    if (s->softap_state == ESP32_WIFI_SOFTAP_NONE) {
-        return;
-    }
-    if (now - s->softap_last_beacon > SOFTAP_GONE_NS) {
-        esp32_wifi_softap_set_state(s, ESP32_WIFI_SOFTAP_NONE);
-        return;
-    }
-    if (s->softap_state != ESP32_WIFI_SOFTAP_ASSOCIATED) {
-        esp32_wifi_softap_try(s);
-    } else if (now - s->softap_last_null > SOFTAP_NULL_NS) {
-        /* The SoftAP drops stations it does not hear from. */
-        s->softap_last_null = now;
-        esp32_wifi_queue(s, esp32_wifi_new_frame(s, FC_NULL_DATA, FC1_TO_DS,
-                                                 s->softap_bssid,
-                                                 s->softap_station,
-                                                 s->softap_bssid));
-    }
-}
-
-/* A beacon the guest sends: join an open SoftAP, or note it is still up. */
-static void esp32_wifi_softap_beacon(Esp32WifiState *s, const uint8_t *frame,
-                                     size_t len)
-{
-    /* body: timestamp 8, interval 2, capability 2, then the SSID IE */
-    const uint8_t *body = frame + HDR_LEN;
-    char ssid[33] = { 0 };
-
-    if (len < HDR_LEN + 14 || body[12] != 0 || body[13] > 32 ||
-        len < HDR_LEN + 14 + body[13]) {
-        return;
-    }
-    if (lduw_le_p(body + 10) & CAP_PRIVACY) {
-        return;     /* encrypted: not supported */
-    }
-    memcpy(ssid, body + 14, body[13]);
-    if (s->softap_state == ESP32_WIFI_SOFTAP_NONE ||
-        memcmp(s->softap_bssid, frame + 16, 6) ||
-        strcmp(ssid, s->softap_ssid)) {
-        memcpy(s->softap_bssid, frame + 16, 6);
-        pstrcpy(s->softap_ssid, sizeof(s->softap_ssid), ssid);
-        s->softap_state = ESP32_WIFI_SOFTAP_NONE;
-        esp32_wifi_softap_set_state(s, ESP32_WIFI_SOFTAP_AUTHENTICATING);
-    }
-    s->softap_last_beacon = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    esp32_wifi_softap_try(s);
-}
-
-/* A frame from the guest's SoftAP to QEMU's station (or to all stations). */
-static void esp32_wifi_softap_frame(Esp32WifiState *s, const uint8_t *frame,
-                                    size_t len)
-{
-    const uint8_t *body = frame + HDR_LEN;
-    uint8_t eth[ETH_HDR_LEN + FRAME_MAX];
-    size_t eth_len;
-
-    switch (frame[0]) {
-    case FC_MGMT_AUTH:
-        if (s->softap_state == ESP32_WIFI_SOFTAP_AUTHENTICATING &&
-            len >= HDR_LEN + 6 && lduw_le_p(body + 2) == 2 &&
-            lduw_le_p(body + 4) == 0) {
-            esp32_wifi_softap_set_state(s, ESP32_WIFI_SOFTAP_ASSOCIATING);
-            esp32_wifi_softap_try(s);
-        }
-        return;
-    case FC_MGMT_ASSOC_RESP:
-        if (s->softap_state == ESP32_WIFI_SOFTAP_ASSOCIATING &&
-            len >= HDR_LEN + 6 && lduw_le_p(body + 2) == 0) {
-            esp32_wifi_softap_set_state(s, ESP32_WIFI_SOFTAP_ASSOCIATED);
-        }
-        return;
-    case FC_MGMT_DEAUTH:
-    case FC_MGMT_DISASSOC:
-        if (s->softap_state != ESP32_WIFI_SOFTAP_NONE) {
-            esp32_wifi_softap_set_state(s,
-                                        ESP32_WIFI_SOFTAP_AUTHENTICATING);
-        }
-        return;
-    }
-    /* From-DS data: addr1 DA, addr2 BSSID, addr3 SA. */
-    if (s->softap_state != ESP32_WIFI_SOFTAP_ASSOCIATED ||
-        (frame[1] & 3) != FC1_FROM_DS) {
-        return;
-    }
-    eth_len = esp32_wifi_to_eth(frame, len, frame + 4, frame + 16, eth);
-    if (!eth_len) {
-        return;
-    }
-    if (!memcmp(eth, s->softap_station, 6)) {
-        if (!s->softap_peer_known) {
-            return;     /* the host has not spoken yet */
-        }
-        memcpy(eth, s->softap_peer, 6);
-        if (eth[12] == ETH_P_ARP_HI && eth[13] == ETH_P_ARP_LO &&
-            eth_len >= ARP_LEN &&
-            !memcmp(eth + ARP_THA, s->softap_station, 6)) {
-            memcpy(eth + ARP_THA, s->softap_peer, 6);
-        }
-    }
-    qemu_send_packet(qemu_get_queue(s->nic), eth, eth_len);
-}
-
-/* An Ethernet frame from the backend into the guest's SoftAP (to-DS). */
-static void esp32_wifi_softap_send(Esp32WifiState *s, const uint8_t *buf,
-                                   size_t size)
-{
-    Esp32WifiFrame *f;
-    size_t body;
-
-    memcpy(s->softap_peer, buf + 6, 6);
-    s->softap_peer_known = true;
-    f = esp32_wifi_new_frame(s, FC_DATA, FC1_TO_DS, s->softap_bssid,
-                             s->softap_station, buf);
-    esp32_wifi_put(f, llc_snap, sizeof(llc_snap));
-    body = f->len;
-    esp32_wifi_put(f, buf + 12, size - 12);
-    /* An ARP's sender MAC too, so the guest answers the station. */
-    if (buf[12] == ETH_P_ARP_HI && buf[13] == ETH_P_ARP_LO &&
-        size >= ARP_LEN) {
-        memcpy(f->data + body + ARP_SHA - 12, s->softap_station, 6);
-    }
-    esp32_wifi_queue(s, f);
 }
 
 static void esp32_wifi_transmit(Esp32WifiState *s, uint32_t desc_addr)
@@ -600,81 +187,12 @@ static void esp32_wifi_transmit(Esp32WifiState *s, uint32_t desc_addr)
         desc_addr = desc[2];
     }
 
-    trace_esp32_wifi_tx(len ? frame[0] : 0, len);
     if (len < HDR_LEN + FCS_LEN) {
         return;
     }
     len -= FCS_LEN;     /* the driver's length counts the FCS */
-    if (frame[0] == FC_MGMT_BEACON) {
-        esp32_wifi_softap_beacon(s, frame, len);
-    } else if (!memcmp(frame + 4, s->softap_station, 6) ||
-               ((frame[1] & 3) == FC1_FROM_DS &&
-                !memcmp(frame + 10, s->softap_bssid, 6))) {
-        esp32_wifi_softap_frame(s, frame, len);
-    } else if ((frame[0] & FC_TYPE_MASK) == FC_TYPE_DATA) {
-        esp32_wifi_data(s, frame, len);
-    } else if (!(frame[0] & FC_TYPE_MASK) &&
-               (esp32_wifi_addr_match(frame + 4, esp32_wifi_bssid(s)))) {
-        esp32_wifi_mgmt(s, frame, len);
-    }
+    esp_wifi_ap_guest_tx(&s->ap, frame, len);
 }
-
-static void esp32_wifi_beacon_timer(void *opaque)
-{
-    Esp32WifiState *s = opaque;
-
-    /* A guest that does not take frames gets no beacons piled up. */
-    if (g_queue_is_empty(&s->rx_queue)) {
-        esp32_wifi_send_bss(s, FC_MGMT_BEACON, broadcast_mac);
-    }
-    esp32_wifi_softap_tick(s);
-    timer_mod(s->beacon_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + BEACON_NS);
-}
-
-/* NIC backend: Ethernet frames from the host network to the station */
-
-static bool esp32_wifi_can_receive(NetClientState *nc)
-{
-    Esp32WifiState *s = qemu_get_nic_opaque(nc);
-
-    return g_queue_get_length(&s->rx_queue) < RX_QUEUE_MAX;
-}
-
-static ssize_t esp32_wifi_receive(NetClientState *nc, const uint8_t *buf,
-                                  size_t size)
-{
-    Esp32WifiState *s = qemu_get_nic_opaque(nc);
-    bool group = buf[0] & 1;
-    bool to_sta;
-    Esp32WifiFrame *f;
-
-    if (size < ETH_HDR_LEN ||
-        size - ETH_HDR_LEN > FRAME_MAX - HDR_LEN - LLC_SNAP_LEN) {
-        return size;
-    }
-    to_sta = s->sta_state == ESP32_WIFI_STA_ASSOCIATED &&
-             (group || !memcmp(buf, s->sta_mac, 6));
-    if (to_sta) {
-        /* To the guest's station, from QEMU's access point (from-DS). */
-        f = esp32_wifi_new_frame(s, FC_DATA, FC1_FROM_DS, buf,
-                                 esp32_wifi_bssid(s), buf + 6);
-        esp32_wifi_put(f, llc_snap, sizeof(llc_snap));
-        esp32_wifi_put(f, buf + 12, size - 12);
-        esp32_wifi_queue(s, f);
-    }
-    if (s->softap_state == ESP32_WIFI_SOFTAP_ASSOCIATED && (group || !to_sta)) {
-        esp32_wifi_softap_send(s, buf, size);
-    }
-    return size;    /* anything else is dropped, as a radio would */
-}
-
-static NetClientInfo net_esp32_wifi_info = {
-    .type = NET_CLIENT_DRIVER_NIC,
-    .size = sizeof(NICState),
-    .can_receive = esp32_wifi_can_receive,
-    .receive = esp32_wifi_receive,
-};
 
 /* Registers */
 
@@ -708,10 +226,8 @@ static void esp32_wifi_write(void *opaque, hwaddr addr, uint64_t val,
         s->rx_head = s->rx_next = val;
         s->regs[A_WIFI_NEXT_RX_DSCR / 4] = val;
         s->regs[A_WIFI_LAST_RX_DSCR / 4] = val;
-        /* The driver is up: the access point starts beaconing. */
-        if (val && !timer_pending(s->beacon_timer)) {
-            timer_mod(s->beacon_timer,
-                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + BEACON_NS);
+        if (val) {
+            esp_wifi_ap_start(&s->ap);
         }
         break;
     case A_WIFI_INT_CLR:
@@ -794,13 +310,7 @@ static void esp32_wifi_mac_reset(Esp32WifiState *s)
     memset(s->regs, 0, sizeof(s->regs));
     s->int_raw = 0;
     s->rx_head = s->rx_next = 0;
-    g_queue_clear_full(&s->rx_queue, g_free);
-    timer_del(s->rx_timer);
-    s->sta_state = ESP32_WIFI_STA_NONE;
-    s->softap_state = ESP32_WIFI_SOFTAP_NONE;
-    s->softap_ssid[0] = 0;
-    s->softap_peer_known = false;
-    timer_del(s->beacon_timer);
+    esp_wifi_ap_reset(&s->ap);
     esp32_wifi_update_irq(s);
 }
 
@@ -825,25 +335,7 @@ static void esp32_wifi_realize(DeviceState *dev, Error **errp)
 {
     Esp32WifiState *s = ESP32_WIFI(dev);
 
-    if (!s->ssid) {
-        s->ssid = g_strdup("QEMU");
-    }
-    if (strlen(s->ssid) > 32) {
-        error_setg(errp, "esp32_wifi: ssid longer than 32 characters");
-        return;
-    }
-    if (s->channel < 1 || s->channel > 13) {
-        error_setg(errp, "esp32_wifi: channel must be 1 to 13");
-        return;
-    }
-    qemu_macaddr_default_if_unset(&s->conf.macaddr);
-    /* The station's own address: the access point's, last byte changed. */
-    memcpy(s->softap_station, s->conf.macaddr.a, 6);
-    s->softap_station[5] ^= 0x80;
-    s->nic = qemu_new_nic(&net_esp32_wifi_info, &s->conf,
-                          object_get_typename(OBJECT(dev)), dev->id,
-                          &dev->mem_reentrancy_guard, s);
-    qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
+    esp_wifi_ap_realize(&s->ap, dev, errp);
 }
 
 static void esp32_wifi_init(Object *obj)
@@ -874,25 +366,20 @@ static void esp32_wifi_init(Object *obj)
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
     qdev_init_gpio_in_named(DEVICE(obj), esp32_wifi_mac_rst,
                             ESP32_WIFI_MAC_RST_GPIO, 1);
-    g_queue_init(&s->rx_queue);
-    s->rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, esp32_wifi_rx_timer, s);
-    s->beacon_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                   esp32_wifi_beacon_timer, s);
+    esp_wifi_ap_init(&s->ap, s, esp32_wifi_deliver);
 }
 
 static void esp32_wifi_finalize(Object *obj)
 {
     Esp32WifiState *s = ESP32_WIFI(obj);
 
-    g_queue_clear_full(&s->rx_queue, g_free);
-    timer_free(s->rx_timer);
-    timer_free(s->beacon_timer);
+    esp_wifi_ap_finalize(&s->ap);
 }
 
 static Property esp32_wifi_properties[] = {
-    DEFINE_NIC_PROPERTIES(Esp32WifiState, conf),
-    DEFINE_PROP_STRING("ssid", Esp32WifiState, ssid),
-    DEFINE_PROP_UINT8("channel", Esp32WifiState, channel, 1),
+    DEFINE_NIC_PROPERTIES(Esp32WifiState, ap.conf),
+    DEFINE_PROP_STRING("ssid", Esp32WifiState, ap.ssid),
+    DEFINE_PROP_UINT8("channel", Esp32WifiState, ap.channel, 1),
     DEFINE_PROP_END_OF_LIST(),
 };
 

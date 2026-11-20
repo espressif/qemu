@@ -10,8 +10,7 @@
 #define HW_NET_ESP32_WIFI_H
 
 #include "hw/sysbus.h"
-#include "net/net.h"
-#include "qemu/timer.h"
+#include "hw/net/esp_wifi_ap.h"
 #include "qom/object.h"
 
 #define TYPE_ESP32_WIFI "esp32_wifi"
@@ -44,59 +43,19 @@ typedef struct Esp32WifiRfBlock {
     uint32_t regs[ESP32_WIFI_REGS];
 } Esp32WifiRfBlock;
 
-typedef enum {
-    ESP32_WIFI_STA_NONE,
-    ESP32_WIFI_STA_AUTHENTICATED,
-    ESP32_WIFI_STA_ASSOCIATED,
-} Esp32WifiStaState;
-
-/* QEMU as a station of an access point the guest runs (SoftAP) */
-typedef enum {
-    ESP32_WIFI_SOFTAP_NONE,
-    ESP32_WIFI_SOFTAP_AUTHENTICATING,
-    ESP32_WIFI_SOFTAP_ASSOCIATING,
-    ESP32_WIFI_SOFTAP_ASSOCIATED,
-} Esp32WifiSoftApState;
-
 struct Esp32WifiState {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
     Esp32WifiRfBlock rf[ESP32_WIFI_MMIO_COUNT];
     qemu_irq irq;
-    NICConf conf;
-    NICState *nic;
+    EspWifiApState ap;
 
     uint32_t regs[ESP32_WIFI_REGS];
     uint32_t int_raw;
     uint32_t rx_head;           /* first RX descriptor (DMA_INLINK) */
     uint32_t rx_next;           /* next RX descriptor to fill */
 
-    /* Frames waiting for an RX descriptor, oldest first. */
-    GQueue rx_queue;
-    QEMUTimer *rx_timer;
-    QEMUTimer *beacon_timer;
-
-    /* The access point and the one station it serves. */
-    char *ssid;
-    uint8_t channel;
-    Esp32WifiStaState sta_state;
-    uint8_t sta_mac[6];
-    uint16_t seq;
-
-    /*
-     * The guest's SoftAP and QEMU's station in it. Host frames enter it with
-     * the station's address (peer is the host's), so any backend works.
-     */
-    Esp32WifiSoftApState softap_state;
-    uint8_t softap_bssid[6];
-    char softap_ssid[33];
-    uint8_t softap_station[6];
-    uint8_t softap_peer[6];
-    bool softap_peer_known;
-    int64_t softap_last_beacon;
-    int64_t softap_last_try;
-    int64_t softap_last_null;
 };
 
 #endif
