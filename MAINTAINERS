@@ -1900,6 +1900,27 @@ F: hw/net/opencores_eth.c
 F: include/hw/xtensa/mx_pic.h
 F: tests/functional/test_xtensa_lx60.py
 
+ESP8266
+M: Philipp-S. Vogt <philipp.vogt@ait.ac.at>
+S: Maintained
+F: hw/xtensa/esp8266.c
+F: include/hw/xtensa/esp8266.h
+F: hw/char/esp8266_uart.c
+F: include/hw/char/esp8266_uart.h
+F: hw/gpio/esp8266_gpio.c
+F: include/hw/gpio/esp8266_gpio.h
+F: hw/misc/esp8266_*.c
+F: include/hw/misc/esp8266_*.h
+F: hw/net/esp8266_wifi.c
+F: include/hw/net/esp8266_wifi.h
+F: hw/ssi/esp8266_*.c
+F: include/hw/ssi/esp8266_*.h
+F: hw/timer/esp8266_frc.c
+F: include/hw/timer/esp8266_frc.h
+F: tests/qtest/esp8266-test.c
+F: tests/qtest/esp8266-wifi-test.c
+F: docs/system/xtensa/esp8266.rst
+
 Devices
 -------
 Overall Audio frontends

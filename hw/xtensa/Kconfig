@@ -28,6 +28,7 @@ config XTENSA_ESP32
     select SSI_M25P80
     select UNIMP
     select OPENCORES_ETH
+    select ESP32_WIFI
     select DWC_SDMMC
     select TMP105
     select LED
@@ -45,4 +46,9 @@ config XTENSA_ESP32S3
     select TMP105
     select ESP_RGB
 
-
+config XTENSA_ESP8266
+    bool
+    default y
+    depends on XTENSA
+    select SSI
+    select ESP8266_WIFI

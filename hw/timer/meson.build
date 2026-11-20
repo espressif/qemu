@@ -31,6 +31,7 @@ system_ss.add(when: 'CONFIG_STELLARIS_GPTM', if_true: files('stellaris-gptm.c'))
 system_ss.add(when: 'CONFIG_STM32F2XX_TIMER', if_true: files('stm32f2xx_timer.c'))
 system_ss.add(when: 'CONFIG_XILINX', if_true: files('xilinx_timer.c'))
 system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_frc_timer.c', 'esp32_timg.c'))
+system_ss.add(when: 'CONFIG_XTENSA_ESP8266', if_true: files('esp8266_frc.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
     'esp_timg.c',
     'esp32c3_timg.c',

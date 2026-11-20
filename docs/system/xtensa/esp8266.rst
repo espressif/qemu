@@ -1,0 +1,72 @@
+Espressif ESP8266 and ESP8285 (``esp8266``)
+===========================================
+
+The ``esp8266`` machine models the Espressif ESP8266EX and ESP8285 SoCs: a
+single Tensilica lx106 core at 80 or 160 MHz with their on-chip peripherals.
+It runs unmodified firmware built with the NONOS SDK or the ESP8266 Arduino
+core, starting from the chip's mask ROM.
+
+Supported devices
+-----------------
+
+* lx106 CPU, DRAM/IRAM, the 80/160 MHz CPU clock (DPORT ``CPU2X``)
+* UART0
+* SPI0 flash controller with the memory-mapped flash window; flash writes
+  go through to the drive image
+* HSPI (SPI1) with an SSI bus for external SPI devices
+* GPIO with interrupts, 16 input and 16 output lines
+* FRC1/FRC2 timers, FRC1 optionally routed to the NMI
+* RTC with RTC memory, which survives resets
+* Pin multiplexer, internal analog I2C master (PLL), SAR ADC (A0)
+* Hardware random number generator
+* WiFi MAC with a built-in open access point, bridged to a QEMU network
+  backend (see below)
+
+Missing devices
+---------------
+
+* UART1, I2S, SDIO, PWM peripherals (the SDK drives PWM from FRC1)
+* Watchdog, deep sleep and power management
+* Encrypted WiFi networks
+
+Boot options
+------------
+
+The machine starts the Espressif mask ROM, which is not distributed with
+QEMU. Dump the 64 KiB ROM from a device and pass it with ``-bios``::
+
+    esptool.py dump_mem 0x40000000 65536 esp8266.rom
+
+The flash image is passed as an MTD drive. Its size must be a power of two
+between 256 KiB and 16 MiB; the reported flash chip ID follows the size::
+
+    $ qemu-system-xtensa -M esp8266 -bios esp8266.rom -nographic \
+        -drive file=flash.bin,if=mtd,format=raw
+
+A raw image can also be passed with ``-kernel``; flash writes are then not
+saved. Without a drive or kernel the flash reads as erased.
+
+Networking
+----------
+
+The WiFi MAC is always present, as WiFi firmware fails without it.
+``-nic ...,model=esp8266_wifi`` connects it to a network backend. The model
+contains an open access point (SSID ``QEMU`` by default, see the ``ssid``
+and ``channel`` properties) and bridges data frames to the backend::
+
+    -nic user,model=esp8266_wifi,hostfwd=tcp::8080-:80
+
+When the firmware runs an access point itself (as WiFi set-up portals do),
+QEMU joins it as a station. With slirp, configure the network so that the
+guest's address stays the same when it later joins QEMU's access point::
+
+    -nic user,model=esp8266_wifi,net=192.168.4.0/24,host=192.168.4.2,\
+         dhcpstart=192.168.4.1,hostfwd=tcp::8080-192.168.4.1:80
+
+Analog input
+------------
+
+The value ``analogRead(A0)`` returns (0 to 1024) is the machine property
+``adc``, which can be changed at run time::
+
+    (qemu) qom-set /machine adc 512

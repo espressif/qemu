@@ -75,6 +75,17 @@ config NE2000_ISA
 config OPENCORES_ETH
     bool
 
+config ESP_WIFI_AP
+    bool
+
+config ESP32_WIFI
+    bool
+    select ESP_WIFI_AP
+
+config ESP8266_WIFI
+    bool
+    select ESP_WIFI_AP
+
 config XGMAC
     bool
 

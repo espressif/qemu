@@ -66,6 +66,8 @@ typedef struct Esp32DportState {
     qemu_irq cache_ill_irq;
     qemu_irq flash_enc_en_gpio;
     qemu_irq flash_dec_en_gpio;
+    qemu_irq wifi_mac_rst_gpio;
+    uint32_t core_rst_en;
 
     bool appcpu_reset_state;
     bool appcpu_stall_state;
@@ -85,6 +87,7 @@ void esp32_dport_clear_ill_trap_state(Esp32DportState* s);
 #define ESP32_DPORT_CACHE_ILL_IRQ_GPIO  "cache-ill-irq"
 #define ESP32_DPORT_FLASH_ENC_EN_GPIO   "flash-enc-en"
 #define ESP32_DPORT_FLASH_DEC_EN_GPIO   "flash-dec-en"
+#define ESP32_DPORT_WIFI_MAC_RST_GPIO   "wifi-mac-rst"
 
 
 REG32(DPORT_APPCPU_RESET, 0x2c)
@@ -126,6 +129,9 @@ REG32(DPORT_APP_CACHE_CTRL1, 0x5C)
 REG32(DPORT_SLAVE_SPI_CONFIG, 0xC8)
     FIELD(DPORT_SLAVE_SPI_CONFIG, SLAVE_SPI_ENCRYPT_ENABLE, 8, 1)
     FIELD(DPORT_SLAVE_SPI_CONFIG, SLAVE_SPI_DECRYPT_ENABLE, 12, 1)
+
+REG32(DPORT_CORE_RST_EN, 0xD0)
+    FIELD(DPORT_CORE_RST_EN, WIFIMAC_RST, 2, 1)
 
 REG32(DPORT_CPU_INTR_FROM_CPU_0, 0xdc)
 REG32(DPORT_CPU_INTR_FROM_CPU_1, 0xe0)
