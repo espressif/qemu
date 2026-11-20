@@ -46,4 +46,8 @@ config XTENSA_ESP32S3
     select TMP105
     select ESP_RGB
 
-
+config XTENSA_ESP8266
+    bool
+    default y
+    depends on XTENSA
+    select SSI
