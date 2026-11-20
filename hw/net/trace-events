@@ -34,6 +34,8 @@ esp32_wifi_rx_drop(uint8_t fc, size_t len) "queue full, fc 0x%02x len %zu"
 esp32_wifi_rx_no_desc(uint32_t addr, uint32_t word0) "descriptor 0x%08x word0 0x%08x not ready"
 esp32_wifi_sta_state(int state) "station state %d"
 esp32_wifi_softap_state(int state, const char *ssid) "state %d in guest SoftAP \"%s\""
+esp8266_wifi_read(uint64_t addr, uint64_t value, unsigned size) "addr 0x%04" PRIx64 " value 0x%08" PRIx64 " size %u"
+esp8266_wifi_write(uint64_t addr, uint64_t value, unsigned size) "addr 0x%04" PRIx64 " value 0x%08" PRIx64 " size %u"
 
 # opencores_eth.c
 open_eth_mii_write(unsigned idx, uint16_t v) "MII[0x%02x] <- 0x%04x"

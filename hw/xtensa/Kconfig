@@ -51,3 +51,4 @@ config XTENSA_ESP8266
     default y
     depends on XTENSA
     select SSI
+    select ESP8266_WIFI

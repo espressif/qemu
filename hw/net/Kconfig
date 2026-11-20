@@ -82,6 +82,10 @@ config ESP32_WIFI
     bool
     select ESP_WIFI_AP
 
+config ESP8266_WIFI
+    bool
+    select ESP_WIFI_AP
+
 config XGMAC
     bool
 
