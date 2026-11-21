@@ -10,6 +10,7 @@ typedef struct Esp32DportState Esp32DportState;
 typedef struct Esp32CacheState Esp32CacheState;
 
 #define TYPE_ESP32_DPORT "misc.esp32.dport"
+#define TYPE_ESP32_CACHE_IOMMU "misc.esp32.cache-iommu"
 #define ESP32_DPORT(obj) OBJECT_CHECK(Esp32DportState, (obj), TYPE_ESP32_DPORT)
 
 #define ESP32_CACHE_PAGE_SIZE           0x10000
@@ -25,10 +26,24 @@ typedef enum Esp32CacheRegionType {
     ESP32_DCACHE_PSRAM,
 } Esp32CacheRegionType;
 
+/*
+ * Each CPU address space also holds, above the 4 GiB a 32-bit guest can reach,
+ * every cache region's contents and its illegal-access trap. The cache region
+ * itself is an IOMMU that points at one of the two, so turning the cache on or
+ * off never changes the memory topology. Both targets must live in the CPU's
+ * own address space: TCG resolves an MMIO section found through an IOMMU
+ * against the CPU's address space.
+ */
+#define ESP32_CACHE_DATA_WINDOW         0x100000000ULL
+#define ESP32_CACHE_TRAP_WINDOW         0x200000000ULL
+#define ESP32_CPU_ADDRESS_SPACE_SIZE    0x300000000ULL
+
 typedef struct Esp32CacheRegionState {
     Esp32CacheState* cache;
-    MemoryRegion mem;
+    IOMMUMemoryRegion iommu;    /* mapped at the region's base address */
+    MemoryRegion mem;           /* contents: flash pages or the PSRAM alias */
     MemoryRegion illegal_access_trap_mem;
+    bool enabled;
     Esp32CacheRegionType type;
     hwaddr base;
     uint32_t illegal_access_retval;
@@ -78,6 +93,8 @@ typedef struct Esp32DportState {
 } Esp32DportState;
 
 void esp32_dport_clear_ill_trap_state(Esp32DportState* s);
+void esp32_dport_map_cache_region(Esp32CacheRegionState *crs,
+                                  MemoryRegion *cpu_mem);
 
 #define ESP32_DPORT_APPCPU_STALL_GPIO   "appcpu-stall"
 #define ESP32_DPORT_APPCPU_RESET_GPIO   "appcpu-reset"
