@@ -368,3 +368,8 @@ aspeed_sli_read(uint64_t offset, unsigned int size, uint32_t data) "To 0x%" PRIx
 aspeed_sliio_write(uint64_t offset, unsigned int size, uint32_t data) "To 0x%" PRIx64 " of size %u: 0x%" PRIx32
 aspeed_sliio_read(uint64_t offset, unsigned int size, uint32_t data) "To 0x%" PRIx64 " of size %u: 0x%" PRIx32
 
+
+# esp32s3_app_trace.c
+esp32s3_app_trace_cmd(uint8_t cmd, uint32_t args_len) "cmd=0x%02x args_len=%u"
+esp32s3_app_trace_swap(uint32_t block_id, uint32_t block_len) "block_id=%u block_len=%u"
+esp32s3_app_trace_resp(uint32_t len, uint32_t addr) "wrote %u bytes to blk@0x%08x"

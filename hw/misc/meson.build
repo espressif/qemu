@@ -257,6 +257,7 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32H2', if_true: files(
 ))
 
 system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files(
+  'esp32s3_app_trace.c',
   'esp32s3_cache.c',
   'ssi_psram.c',
   'esp_sha.c',
