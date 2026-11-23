@@ -241,7 +241,7 @@ static void esp32_cache_data_sync(Esp32CacheRegionState* crs)
         return;
     }
 
-    Esp32FlashEncryptionState * flash_enc = esp32_flash_encryption_find();
+    Esp32FlashEncryptionState * flash_enc = crs->cache->dport->flash_enc;
     bool decrypt = (flash_enc != NULL && esp32_flash_decryption_enabled(flash_enc));
 
     uint8_t* cache_data = (uint8_t*) memory_region_get_ram_ptr(&crs->mem);
@@ -447,6 +447,8 @@ static void esp32_dport_init(Object *obj)
 
 static Property esp32_dport_properties[] = {
     DEFINE_PROP_DRIVE("flash", Esp32DportState, flash_blk),
+    DEFINE_PROP_LINK("flash_enc", Esp32DportState, flash_enc, TYPE_ESP32_FLASH_ENCRYPTION,
+                     Esp32FlashEncryptionState *),
     DEFINE_PROP_BOOL("has_psram", Esp32DportState, has_psram, false),
     DEFINE_PROP_END_OF_LIST(),
 };

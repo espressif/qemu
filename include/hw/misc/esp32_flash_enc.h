@@ -32,13 +32,6 @@ typedef struct Esp32FlashEncryptionState {
 
 } Esp32FlashEncryptionState;
 
-/* returns NULL unless there is exactly one device */
-static inline Esp32FlashEncryptionState *esp32_flash_encryption_find(void)
-{
-    Object *o = object_resolve_path_type("", TYPE_ESP32_FLASH_ENCRYPTION, NULL);
-    return o ? ESP32_FLASH_ENCRYPTION(o) : NULL;
-}
-
 bool esp32_flash_encryption_enabled(struct Esp32FlashEncryptionState* s);
 bool esp32_flash_decryption_enabled(struct Esp32FlashEncryptionState* s);
 void esp32_flash_encryption_get_result(struct Esp32FlashEncryptionState* s, uint32_t* dst, size_t dst_words);
