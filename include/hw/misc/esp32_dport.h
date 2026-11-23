@@ -60,6 +60,7 @@ typedef struct Esp32DportState {
     Esp32CacheState cache_state[ESP32_CPU_COUNT];
     MemoryRegion psram;         /* Shared between the CPUs: the actual memory region for PSRAM */
     BlockBackend *flash_blk;
+    Esp32FlashEncryptionState *flash_enc;
     qemu_irq appcpu_stall_req;
     qemu_irq appcpu_reset_req;
     qemu_irq clk_update_req;
